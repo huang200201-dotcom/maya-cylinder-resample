@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maya-cylinder-resample"
+dynamic = ["version"]
+description = "Resegment modeled cylindrical meshes in Maya 2024 while retaining UV layout"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["maya", "cylinder", "mesh", "uv", "resampling"]
+
+[project.urls]
+Repository = "https://github.com/huang200201-dotcom/maya-cylinder-resample"
+Issues = "https://github.com/huang200201-dotcom/maya-cylinder-resample/issues"
+Releases = "https://github.com/huang200201-dotcom/maya-cylinder-resample/releases"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "cylinder_resample.__version__"}
+
+[tool.setuptools.package-data]
+cylinder_resample = ["config.json"]
