@@ -388,15 +388,27 @@ def check_for_update(current_version=None, repository=None, token=None):
     }
 
 
+def _reject_reparse_ancestors(path):
+    # Windows 8.3 names are aliases, not links; inspect metadata instead.
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    try:
+        for candidate in (path, *path.parents):
+            details = os.lstat(str(candidate))
+            attributes = getattr(details, "st_file_attributes", 0) or 0
+            if stat.S_ISLNK(details.st_mode) or attributes & reparse_flag:
+                raise UpdaterError("插件目录及其父目录不能包含符号链接或 Windows 重解析点。")
+    except OSError:
+        raise UpdaterError("无法检查插件目录及其父目录的安全状态。") from None
+
+
 def _target(install_dir=None):
     if install_dir is not None and not isinstance(install_dir, (str, os.PathLike)):
         raise UpdaterError("更新目标目录无效。")
     supplied = Path(install_dir) if install_dir is not None else Path(__file__).parent
     absolute = Path(os.path.abspath(str(supplied)))
-    if (absolute.name != "cylinder_resample" or not absolute.is_dir()
-            or absolute.is_symlink()
-            or os.path.normcase(str(absolute)) != os.path.normcase(os.path.realpath(absolute))):
+    if absolute.name != "cylinder_resample" or not absolute.is_dir():
         raise UpdaterError("更新目标必须为已安装的 cylinder_resample 实际目录。")
+    _reject_reparse_ancestors(absolute)
     return absolute
 
 
@@ -509,9 +521,9 @@ def rollback_install(result):
     backup = Path(result.get("backup_dir", ""))
     backup = Path(os.path.abspath(str(backup)))
     if (backup.parent != target.parent or not backup.name.startswith("cylinder_resample.backup-")
-            or not backup.is_dir() or backup.is_symlink()
-            or os.path.normcase(str(backup)) != os.path.normcase(os.path.realpath(backup))):
+            or not backup.is_dir()):
         raise UpdaterError("原插件备份不存在或路径不安全，未修改当前插件。")
+    _reject_reparse_ancestors(backup)
     if _installed_version(target) != result.get("version"):
         raise UpdaterError("当前版本已发生变化，不能恢复旧的更新记录。")
     if _installed_version(backup) != result.get("previous_version"):
@@ -519,6 +531,7 @@ def rollback_install(result):
     failed = target.parent / ("cylinder_resample.failed-" + uuid.uuid4().hex[:12])
     with _update_lock(target.parent):
         target = _target(target)
+        _reject_reparse_ancestors(backup)
         if (_installed_version(target) != result.get("version")
                 or not backup.is_dir() or backup.is_symlink()
                 or _installed_version(backup) != result.get("previous_version")):

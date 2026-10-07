@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import importlib.util
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import types
@@ -72,6 +73,38 @@ def installer_environment(directory, source_options=None):
 
 
 class DragInstallerTests(unittest.TestCase):
+    def test_manual_upgrade_accepts_safe_windows_short_name_alias(self):
+        with tempfile.TemporaryDirectory() as directory, installer_environment(directory) as values:
+            installer, source, target, old_package, old_ui = values
+            with patch.object(installer.os.path, "realpath", return_value=str(target.parent / "expanded-long-name")):
+                installer.install()
+            self.assertEqual(tree_bytes(target), tree_bytes(source))
+            self.assertEqual(sys.modules["cylinder_resample"].__version__, "0.4.0")
+
+    def test_manual_upgrade_rejects_symlink_and_windows_junction_ancestors(self):
+        real_lstat = os.lstat
+        for selected in ("target", "parent"):
+            for mode in ("symlink", "junction"):
+                with self.subTest(selected=selected, mode=mode), tempfile.TemporaryDirectory() as directory, \
+                        installer_environment(directory) as values:
+                    installer, source, target, old_package, old_ui = values
+                    original = tree_bytes(target)
+                    unsafe = target if selected == "target" else target.parent
+
+                    def lstat(path, *args, **kwargs):
+                        actual = real_lstat(path, *args, **kwargs)
+                        if os.path.normcase(os.path.abspath(str(path))) == os.path.normcase(str(unsafe)):
+                            return types.SimpleNamespace(
+                                st_mode=stat.S_IFLNK if mode == "symlink" else actual.st_mode,
+                                st_file_attributes=0x400 if mode == "junction" else 0)
+                        return actual
+
+                    with patch.object(installer.os, "lstat", lstat):
+                        with self.assertRaises(RuntimeError):
+                            installer.install()
+                    self.assertEqual(tree_bytes(target), original)
+                    self.assertIs(sys.modules["cylinder_resample"], old_package)
+
     def test_manual_upgrade_uses_staged_files_retains_backup_and_transfers_records(self):
         with tempfile.TemporaryDirectory() as directory, installer_environment(directory) as values:
             installer, source, target, old_package, old_ui = values

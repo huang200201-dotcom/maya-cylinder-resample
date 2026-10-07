@@ -9,6 +9,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -355,6 +356,64 @@ class ReleaseAndNetworkTests(unittest.TestCase):
 
 
 class AtomicInstallTests(unittest.TestCase):
+    def test_target_accepts_safe_windows_short_name_alias_without_realpath_equality(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = installed_fixture(directory)
+            with patch.object(updater.os.path, "realpath", return_value=str(target.parent / "long-name" / target.name)):
+                self.assertEqual(updater._target(target), target.absolute())
+
+    def test_target_rejects_symlinks_and_windows_reparse_points_in_each_ancestor(self):
+        real_lstat = os.lstat
+        for selected in ("target", "parent"):
+            for mode in ("symlink", "junction"):
+                with self.subTest(selected=selected, mode=mode), tempfile.TemporaryDirectory() as directory:
+                    target = installed_fixture(directory)
+                    unsafe = target if selected == "target" else target.parent
+
+                    def lstat(path, *args, **kwargs):
+                        result = real_lstat(path, *args, **kwargs)
+                        if os.path.normcase(os.path.abspath(str(path))) == os.path.normcase(str(unsafe)):
+                            return types.SimpleNamespace(
+                                st_mode=stat.S_IFLNK if mode == "symlink" else result.st_mode,
+                                st_file_attributes=0x400 if mode == "junction" else 0)
+                        return result
+
+                    with patch.object(updater.os, "lstat", lstat):
+                        with self.assertRaises(updater.UpdaterError):
+                            updater._target(target)
+
+    def test_rollback_accepts_safe_realpath_alias_and_rejects_redirected_backup(self):
+        data, release, _ = fixture_package()
+        with tempfile.TemporaryDirectory() as directory:
+            target = installed_fixture(directory)
+            original = tree_bytes(target)
+            with patch.object(updater, "_request", return_value=data):
+                result = updater.install_release(release, target)
+            with patch.object(updater.os.path, "realpath", return_value=str(target.parent / "expanded-alias")):
+                updater.rollback_install(result)
+            self.assertEqual(tree_bytes(target), original)
+        real_lstat = os.lstat
+        for mode in ("symlink", "junction"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                target = installed_fixture(directory)
+                with patch.object(updater, "_request", return_value=data):
+                    result = updater.install_release(release, target)
+                installed = tree_bytes(target)
+                backup = Path(result["backup_dir"])
+
+                def lstat(path, *args, **kwargs):
+                    actual = real_lstat(path, *args, **kwargs)
+                    if os.path.normcase(os.path.abspath(str(path))) == os.path.normcase(str(backup)):
+                        return types.SimpleNamespace(
+                            st_mode=stat.S_IFLNK if mode == "symlink" else actual.st_mode,
+                            st_file_attributes=0x400 if mode == "junction" else 0)
+                    return actual
+
+                with patch.object(updater.os, "lstat", lstat):
+                    with self.assertRaises(updater.UpdaterError):
+                        updater.rollback_install(result)
+                self.assertEqual(tree_bytes(target), installed)
+
     def test_verified_install_retains_backup_and_supports_safe_rollback(self):
         data, release, files = fixture_package()
         with tempfile.TemporaryDirectory() as directory:

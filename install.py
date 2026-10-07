@@ -4,9 +4,26 @@ import importlib
 import ast
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import uuid
+
+
+def _check_destination(path):
+    current = os.path.abspath(path)
+    while True:
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            info = None
+        if info and (stat.S_ISLNK(info.st_mode)
+                     or getattr(info, "st_file_attributes", 0) & 0x400):
+            raise RuntimeError("插件目录不能是符号链接或重定向目录。")
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
 
 
 def install():
@@ -32,8 +49,7 @@ def install():
         cmds.deleteUI("CylinderResampleWindow")
     records = getattr(getattr(old_ui, "_SESSION", None), "preview_records", [])
     os.makedirs(scripts, exist_ok=True)
-    if os.path.normcase(os.path.abspath(destination)) != os.path.normcase(os.path.realpath(destination)):
-        raise RuntimeError("插件目录不能是符号链接或重定向目录。")
+    _check_destination(destination)
     backup = None
     staged = None
     installed = False

@@ -310,7 +310,7 @@ class AdapterContractTests(unittest.TestCase):
                 self.assertEqual(len(loaded), 2)
                 self.assertEqual(Path(loads[0]).read_text(encoding="utf-8"), "COMMAND = 'fixture'\n")
                 self.assertEqual(Path(loads[1]).read_text(encoding="utf-8"), "COMMAND = 'changed_fixture'\n")
-                with patch("cylinder_resample.__version__", "0.3.1"):
+                with patch("cylinder_resample.__version__", "99.0.0"):
                     next_version = self.adapter._ensure_mesh_command()
                 self.assertNotEqual(changed, next_version)
                 self.assertEqual(len(loaded), 3)
