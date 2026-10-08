@@ -24,7 +24,7 @@ def package_fixture(parent, version, load_failure=False, invalid_syntax=False):
     (package / "__init__.py").write_text(initialization, encoding="utf-8")
     (package / "ui.py").write_text(
         "class Session:\n    preview_records = []\n_SESSION = Session()\n", encoding="utf-8")
-    for name in ("core.py", "adapter.py", "mesh_command.py", "updater.py", "update_ui.py"):
+    for name in ("core.py", "spacing.py", "adapter.py", "mesh_command.py", "updater.py", "update_ui.py"):
         (package / name).write_text("VALUE = 1\n", encoding="utf-8")
     (package / "compat.py").write_bytes((ROOT / "src" / "cylinder_resample" / "compat.py").read_bytes())
     if invalid_syntax:

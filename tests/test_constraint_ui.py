@@ -259,6 +259,62 @@ class ConstraintUiTests(unittest.TestCase):
         self.assertIn("共面端盖冗余硬边：3 条，不锁定段数", text)
         self.assertIn("Fixture source warning", text)
 
+    def test_circle_summary_reports_fixed_positions_without_rebuilding_cache(self):
+        self.read()
+        self.scene.controls["mode"]["select"] = 3
+        self.session.params_changed()
+        self.assertIn("10 个边界位置固定", self.status())
+        self.assertEqual(self.analyzer.call_count, 1)
+
+    def test_preview_reports_worst_ring_as_well_as_selected_ring(self):
+        self.read()
+        original = self.ui.adapter.build_result
+
+        def build(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result["result"]["stats"].update(worst_spacing_ratio=1.5, worst_ring=1)
+            return result
+
+        with patch.object(self.ui.adapter, "build_result", side_effect=build):
+            self.session.preview()
+        self.assertIn("所选圈最宽 / 最窄边长：1.000", self.status())
+        self.assertIn("全部截面最差边长比：1.500（第 2 圈）", self.status())
+
+    def test_preview_reports_odd_count_conflict_and_verified_targets(self):
+        self.read()
+        original = self.ui.adapter.build_result
+
+        def build(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result["result"]["stats"].update(
+                spacing_limited_by_constraints=True, seed_ring=0,
+                per_ring_spacing=({"actual_interval_counts": (2, 3, 2, 2)},),
+                compatible_counts=(8, 12))
+            return result
+
+        with patch.object(self.ui.adapter, "build_result", side_effect=build):
+            self.session.preview()
+        self.assertIn("无法同时满足所有截面等角度分布", self.status())
+        self.assertIn("固定区间分段：2 + 3 + 2 + 2", self.status())
+        self.assertIn("已验证兼容段数：8 / 12 段", self.status())
+
+    def test_preview_does_not_advertise_incompatible_cross_ring_targets(self):
+        self.read()
+        original = self.ui.adapter.build_result
+
+        def build(*args, **kwargs):
+            result = original(*args, **kwargs)
+            result["result"]["stats"].update(
+                spacing_limited_by_constraints=True, seed_ring=0,
+                per_ring_spacing=({"actual_interval_counts": (2, 4)},),
+                compatible_counts=())
+            return result
+
+        with patch.object(self.ui.adapter, "build_result", side_effect=build):
+            self.session.preview()
+        self.assertIn("附近未找到所有截面共用的兼容段数", self.status())
+        self.assertNotIn("已验证兼容段数", self.status())
+
     def test_minimum_and_low_target_warning_change_immediately_with_toggles(self):
         self.read()
         self.scene.controls["count"]["value"] = 5

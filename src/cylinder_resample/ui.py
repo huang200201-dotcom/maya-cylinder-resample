@@ -126,7 +126,7 @@ class Session:
     def _summary(self):
         if not self.snapshot:
             return "等待分析"
-        count, _, keep_uv, keep_hard = self._params()
+        count, mode, keep_uv, keep_hard = self._params()
         if (self._constraint_snapshot is not self.snapshot or
                 self._constraint_topology is not self.analysis or
                 self._constraint_analysis is None or
@@ -148,6 +148,9 @@ class Session:
             details.append("共面端盖冗余硬边：{} 条，不锁定段数。".format(constraints["ignored_cap_hard_edges"]))
         if count < constraints["minimum_count"]:
             details.append("当前目标低于最低段数。")
+        if mode == "circle" and constraints["protected_count"] > 1:
+            details.append("圆形拟合：{} 个边界位置固定，等角度分段受各区间可分段数限制。".format(
+                constraints["protected_count"]))
         return "{}\n圆周：{} 段    截面：{} 圈    处理面数：{}\n约束列：{}    最低目标段数：{}\nUV 接缝：{}    材质边界：{}    硬边：{}（列，可重叠）\n{}".format(
             shape.split("|")[-2] if "|" in shape else shape,
             self.analysis["source_count"], len(self.analysis["rings"]),
@@ -224,6 +227,23 @@ class Session:
         stats = built["result"].get("stats", {})
         ratio = stats.get("spacing_ratio")
         spacing = "\n所选圈最宽 / 最窄边长：{:.3f}".format(ratio) if ratio else ""
+        worst = stats.get("worst_spacing_ratio")
+        if worst:
+            spacing += "\n全部截面最差边长比：{:.3f}（第 {} 圈）".format(
+                worst, stats["worst_ring"] + 1)
+        if stats.get("spacing_limited_by_constraints"):
+            spacing += "\n当前固定边界与目标段数无法同时满足所有截面等角度分布。"
+            ring_spacing = stats.get("per_ring_spacing", ())[stats["seed_ring"]]
+            allocations = ring_spacing.get("actual_interval_counts", ())
+            if allocations:
+                spacing += "\n固定区间分段：" + " + ".join(str(number) for number in allocations[:16])
+                if len(allocations) > 16:
+                    spacing += " ...（共 {} 个区间）".format(len(allocations))
+            compatible = stats.get("compatible_counts", ())
+            if compatible:
+                spacing += "\n已验证兼容段数：" + " / ".join(str(number) for number in compatible) + " 段"
+            else:
+                spacing += "\n附近未找到所有截面共用的兼容段数，固定边界保护仍生效。"
         self.message("预览：{} → {} 段{}\nUV 集：{}\n{}".format(
             self.analysis["source_count"], count, spacing,
             ", ".join(built["result"]["uv_sets"]) if keep_uv else "关闭", "\n".join(built["warnings"])))

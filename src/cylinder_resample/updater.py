@@ -29,7 +29,7 @@ PACKAGE_PREFIX = "scripts/cylinder_resample/"
 ARCHIVE_PREFIX = "CylinderResample/"
 REQUIRED_FILES = {
     "__init__.py", "core.py", "adapter.py", "ui.py", "updater.py",
-    "config.json", "mesh_command.py", "update_ui.py", "compat.py",
+    "config.json", "mesh_command.py", "update_ui.py", "compat.py", "spacing.py",
 }
 _VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 _REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}\Z")

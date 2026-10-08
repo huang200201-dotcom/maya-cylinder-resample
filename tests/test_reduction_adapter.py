@@ -2,6 +2,7 @@
 
 import copy
 import json
+import math
 import sys
 import unittest
 from contextlib import ExitStack
@@ -125,6 +126,39 @@ class ReductionAdapterTests(unittest.TestCase):
                                        result["new_rings"][cap["ring"]][column])))
                 smoothing = {tuple(edge): smooth for edge, smooth in payload["smoothing"]}
                 self.assertFalse(smoothing[radial])
+
+    def test_circle_smoothing_uses_each_ring_actual_sampling_parameters(self):
+        snapshot = fan_snapshot(n=12)
+        angles = (0, 10, 20, 30, 60, 110, 160, 200, 240, 280, 315, 345)
+        for column, degrees in enumerate(angles):
+            angle = math.radians(degrees)
+            snapshot["points"][12 + column] = (math.cos(angle), math.sin(angle), 2.0)
+        snapshot["metric_points"] = list(snapshot["points"])
+        snapshot["smoothing"][(14, 15)] = False
+        result, payload = self.build(snapshot, 9, mode="circle")
+        top = result["analysis"]["rings"].index(list(range(12, 24)))
+        parameters = result["ring_samples"][top]
+        self.assertGreater(parameters[1], 3.0)
+        self.assertLess(result["samples"][1], 2.0)
+        smoothing = {tuple(edge): smooth for edge, smooth in payload["smoothing"]}
+        edge = tuple(sorted(result["new_rings"][top][:2]))
+        self.assertFalse(smoothing[edge])
+        self.assertAlmostEqual(result["stats"]["worst_spacing_ratio"], 1.0)
+
+    def test_circle_odd_spacing_reports_hard_constraints_with_uv_disabled(self):
+        snapshot = fan_snapshot(n=12)
+        for column in (0, 3, 6, 9):
+            snapshot["smoothing"][(column, column + 12)] = False
+        result, _ = self.build(snapshot, 9, mode="circle", preserve_uvs=False)
+        self.assertTrue(result["stats"]["spacing_limited_by_constraints"])
+        self.assertEqual(result["stats"]["compatible_counts"], (8, 12))
+        self.assertTrue(any("UV 接缝 0 列、材质边界 0 列、硬边 4 列" in message
+                            for message in result["warnings"]))
+        self.assertEqual(result["uv_sets"], {})
+        released, _ = self.build(snapshot, 9, mode="circle", preserve_uvs=False,
+                                  preserve_hard_edges=False)
+        self.assertFalse(released["stats"]["spacing_limited_by_constraints"])
+        self.assertAlmostEqual(released["stats"]["worst_spacing_ratio"], 1.0)
 
     def test_nonplanar_all_hard_cap_keeps_its_twenty_constraints(self):
         snapshot = fan_snapshot()

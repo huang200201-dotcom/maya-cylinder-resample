@@ -290,6 +290,7 @@ def _edge_smoothing(snapshot, result, preserve_hard_edges):
     source_rings = result["analysis"]["rings"]
     new_rings = result["new_rings"]
     samples = result["samples"]
+    ring_samples = result.get("ring_samples", [samples] * len(source_rings))
     size = result["analysis"]["source_count"]
     smooth = {}
     if not preserve_hard_edges:
@@ -298,9 +299,9 @@ def _edge_smoothing(snapshot, result, preserve_hard_edges):
     for edge, value in source_smoothing.items():
         if edge[0] in mapping and edge[1] in mapping:
             smooth[tuple(sorted((mapping[edge[0]], mapping[edge[1]])))] = value
-    for source_ring, new_ring in zip(source_rings, new_rings):
-        for column, start in enumerate(samples):
-            finish = samples[(column + 1) % len(samples)]
+    for source_ring, new_ring, parameters in zip(source_rings, new_rings, ring_samples):
+        for column, start in enumerate(parameters):
+            finish = parameters[(column + 1) % len(parameters)]
             if finish <= start:
                 finish += size
             source_edges = [tuple(sorted((source_ring[index % size], source_ring[(index + 1) % size])))
@@ -309,10 +310,12 @@ def _edge_smoothing(snapshot, result, preserve_hard_edges):
             smooth[edge] = all(source_smoothing.get(item, True) for item in source_edges)
     for band in result["analysis"]["bands"]:
         a, b = band["rings"]
-        for column, sample in enumerate(samples):
-            integer = int(round(sample)) % size
+        for column, (sample_a, sample_b) in enumerate(zip(ring_samples[a], ring_samples[b])):
+            integer = int(round(sample_a)) % size
             edge = tuple(sorted((new_rings[a][column], new_rings[b][column])))
-            if abs(sample - round(sample)) < 1e-8:
+            if (abs(sample_a - round(sample_a)) < 1e-8 and
+                    abs(sample_b - round(sample_b)) < 1e-8 and
+                    int(round(sample_b)) % size == integer):
                 old = tuple(sorted((source_rings[a][integer], source_rings[b][integer])))
                 smooth[edge] = source_smoothing.get(old, True)
             else:
@@ -323,7 +326,7 @@ def _edge_smoothing(snapshot, result, preserve_hard_edges):
         ring_index = cap["ring"]
         center = mapping[cap["center"]]
         uniform_hard = _redundant_cap_hard_edges(snapshot, result["analysis"], cap)
-        for column, sample in enumerate(samples):
+        for column, sample in enumerate(ring_samples[ring_index]):
             edge = tuple(sorted((center, new_rings[ring_index][column])))
             if abs(sample - round(sample)) < 1e-8:
                 old = tuple(sorted((cap["center"], source_rings[ring_index][int(round(sample)) % size])))
@@ -388,6 +391,11 @@ def build_result(snapshot, target_count, shape_mode="contour", preserve_uvs=True
     except core.ConstraintError as error:
         raise ToolError(_constraint_message(current, analysis, target_count, preserve_uvs,
                                             preserve_hard_edges)) from error
+    if result.get("stats", {}).get("spacing_limited_by_constraints"):
+        summary = constraint_summary(current, analysis, preserve_uvs, preserve_hard_edges)
+        result["warnings"].append(
+            "间距约束来源：UV 接缝 {} 列、材质边界 {} 列、硬边 {} 列（可重叠）。".format(
+                summary["uv_count"], summary["material_count"], summary["hard_count"]))
     leaf = current["transform"].split("|")[-1].replace(":", "_")
     create_command = _ensure_mesh_command()
     smoothing = _edge_smoothing(current, result, preserve_hard_edges)
