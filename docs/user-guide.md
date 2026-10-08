@@ -1,10 +1,10 @@
 # 使用说明
 
-适配目标：Windows / Maya 2022 至 2027，插件 0.4.0。仅支持 Python 3，最低 Python 3.7；六版 Maya 尚未逐版完成原生实机验收。
+适配目标：Windows / Maya 2022 至 2027，插件 0.4.1。仅支持 Python 3，最低 Python 3.7；六版 Maya 尚未逐版完成原生实机验收。
 
 ## 安装
 
-从仓库 [Releases](https://github.com/huang200201-dotcom/maya-cylinder-resample/releases/latest) 下载 `CylinderResample_Maya2022-2027_v0.4.0.zip`，完整解压后将 `install.py` 拖入 Maya 三维视图。文件会复制到当前 Maya 版本的用户脚本目录，工具会打开，并在 `CylinderTools` 工具架添加 `CR` 按钮。无需安装其他 Python 库。使用多个 Maya 版本时，需分别在各版本中安装一次。
+从仓库 [Releases](https://github.com/huang200201-dotcom/maya-cylinder-resample/releases/latest) 下载 `CylinderResample_Maya2022-2027_v0.4.1.zip`，完整解压后将 `install.py` 拖入 Maya 三维视图。文件会复制到当前 Maya 版本的用户脚本目录，工具会打开，并在 `CylinderTools` 工具架添加 `CR` 按钮。无需安装其他 Python 库。使用多个 Maya 版本时，需分别在各版本中安装一次。
 
 Maya 2022 默认使用 Python 3。若曾将启动参数设置为 `-pythonver 2`，或将 `MAYA_PYTHON_VERSION` 设置为 `2`，先恢复默认 Python 3 模式并重启 Maya，再安装插件。不支持 Python 2 模式，不能通过安装额外库绕过这一要求。参见 [Autodesk Python 模式说明](https://help.autodesk.com/cloudhelp/2022/ENU/Maya-Scripting/files/GUID-C0F27A50-3DD6-454C-A4D1-9E3C44B3C990.htm)。
 
@@ -48,7 +48,9 @@ UV 从原面角插值，固定接缝列，并保留岛的布局坐标，不重�
 
 点击“检查 GitHub 更新”，确认正式新版本后安装。更新前保留或取消预览。更新来自固定公开仓库的 GitHub Releases，不需要登录，不直接读取开发分支代码。下载与安装完成后会重新打开工具，需要重新分析模型。
 
-0.3.x 在 Maya 2024 中可以直接热更新到 0.4.0。其他 Maya 版本建议先手动安装 0.4.0 通用包一次，尤其 Maya 2022 的旧更新器不兼容 Python 3.7；后续更新会自动读取当前 Maya 主版本，与发布清单范围核对。发布附件中的 `Maya2024` 历史名称与 `Maya2022-2027` 通用名称内容完全相同，前者用于兼容旧更新器。
+更新确认弹窗固定为 560 × 460，日志在只读区域内换行并滚动查看，底部按钮始终可见。默认焦点是“取消”；只有点击“立即更新”才会开始安装，关闭弹窗不会取消预览或安装更新。旧版若日志撑高弹窗、无法点击按钮，先关闭弹窗，再下载最新版 ZIP，完整解压并拖入 `install.py` 安装。
+
+0.3.x 在 Maya 2024 中可以直接热更新到当前版。其他 Maya 版本建议先手动安装当前通用包一次，尤其 Maya 2022 的旧更新器不兼容 Python 3.7；后续更新会自动读取当前 Maya 主版本，与发布清单范围核对。发布附件中的 `Maya2024` 历史名称与 `Maya2022-2027` 通用名称内容完全相同，前者用于兼容旧更新器。
 
 下载会检查大小、SHA-256 和文件清单；旧代码先备份，切换失败会尝试回滚。网络中断或 GitHub 限流时保留当前版本，稍后重试，也可从 Releases 下载 ZIP 手动拖入安装。
 

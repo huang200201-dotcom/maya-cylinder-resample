@@ -54,6 +54,46 @@ def check(session):
             lambda result, error: _checked(session, result, error))
 
 
+def _release_dialog_contents(release):
+    form = cmds.setParent(query=True)
+    cmds.formLayout(form, edit=True, width=560, height=460)
+    heading = cmds.text(parent=form, label="{} → {}".format(__version__, release["version"]),
+                        align="left", height=24)
+    notes = cmds.scrollField(parent=form, editable=False, wordWrap=True,
+                             text=release.get("notes") or "该版本未提供更新说明。",
+                             width=536, height=320, insertionPosition=0)
+    notice = cmds.text(parent=form, label="更新将取消未确认的预览，并保留旧版备份。",
+                       align="left", wordWrap=True, height=32)
+    buttons = []
+    for label in ("立即更新", "打开发布页", "取消"):
+        buttons.append(cmds.button(
+            parent=form, label=label, height=32,
+            command=lambda *args, choice=label: cmds.layoutDialog(dismiss=choice)))
+    update, page, cancel = buttons
+    # Only the notes scroll; the notice and actions stay anchored to the bottom.
+    cmds.formLayout(
+        form, edit=True,
+        attachForm=[(heading, "top", 12), (heading, "left", 12), (heading, "right", 12),
+                    (notes, "left", 12), (notes, "right", 12),
+                    (notice, "left", 12), (notice, "right", 12),
+                    (update, "left", 12), (cancel, "right", 12)] +
+                   [(button, "bottom", 12) for button in buttons],
+        attachControl=[(notes, "top", 8, heading), (notes, "bottom", 8, notice),
+                       (notice, "bottom", 10, update)],
+        attachPosition=[(update, "right", 4, 33), (page, "left", 4, 33),
+                        (page, "right", 4, 66), (cancel, "left", 4, 66)])
+    cmds.setFocus(cancel)
+
+
+def _release_dialog(release, year):
+    options = {"title": "圆柱重分段更新", "ui": lambda *args: _release_dialog_contents(release)}
+    # Before Maya 2025 layoutDialog is already fixed-size and has no resizable flag.
+    if year >= 2025:
+        options["resizable"] = False
+    answer = cmds.layoutDialog(**options)
+    return answer if answer in ("立即更新", "打开发布页") else "取消"
+
+
 def _checked(session, release, error):
     global _JOB
     _JOB = None
@@ -66,12 +106,12 @@ def _checked(session, release, error):
     if not release["available"]:
         session.message("当前版本 {} 已是最新发布版本。".format(__version__))
         return
-    answer = cmds.confirmDialog(
-        title="圆柱重分段更新",
-        message="{} → {}\n\n{}\n\n更新将取消未确认的预览，并保留旧版备份。".format(
-            __version__, release["version"], release.get("notes", "")[:2000]),
-        button=["立即更新", "打开发布页", "取消"], defaultButton="立即更新",
-        cancelButton="取消", dismissString="取消")
+    try:
+        year = ensure_supported()
+    except (ValueError, RuntimeError) as exc:
+        session.message(str(exc), error=True)
+        return
+    answer = _release_dialog(release, year)
     if answer == "打开发布页":
         webbrowser.open(release["release_url"])
         return
@@ -82,7 +122,6 @@ def _checked(session, release, error):
         return
     from . import ui
     try:
-        year = ensure_supported()
         session.cancel(silent=True)
     except Exception as exc:
         session.message("预览未能清理，已取消更新：{}".format(exc), error=True)

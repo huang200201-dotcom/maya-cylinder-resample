@@ -42,6 +42,12 @@ class Environment:
         self.confirm = "取消"
         self.confirmations = []
         self.buttons = []
+        self.dialog_form = "fixture_dialog|form"
+        self.dialog_controls = []
+        self.form_edits = []
+        self.focuses = []
+        self.dismissals = []
+        self.before_dialog_return = None
         self.deferred = []
         self.warnings = []
         self.overlays = []
@@ -58,8 +64,13 @@ class Environment:
         self.cmds.about = self.about
         self.cmds.window = lambda *args, **kwargs: self.window
         self.cmds.control = lambda *args, **kwargs: True
-        self.cmds.button = lambda name, **kwargs: self.buttons.append(kwargs["enable"])
-        self.cmds.confirmDialog = self.confirm_dialog
+        self.cmds.button = self.button
+        self.cmds.layoutDialog = self.layout_dialog
+        self.cmds.setParent = self.set_parent
+        self.cmds.formLayout = self.form_layout
+        self.cmds.text = lambda **kwargs: self.create_control("text", kwargs)
+        self.cmds.scrollField = lambda **kwargs: self.create_control("scrollField", kwargs)
+        self.cmds.setFocus = self.focuses.append
         self.cmds.deleteUI = self.delete_ui
         self.cmds.warning = self.warnings.append
         self.cmds.inViewMessage = lambda **kwargs: self.overlays.append(kwargs)
@@ -72,8 +83,40 @@ class Environment:
         self.version_reads.append(kwargs)
         return self.maya_version
 
-    def confirm_dialog(self, **kwargs):
+    def create_control(self, kind, kwargs):
+        name = "{}|{}{}".format(self.dialog_form, kind, len(self.dialog_controls))
+        self.dialog_controls.append({"name": name, "kind": kind, "options": kwargs})
+        return name
+
+    def button(self, name=None, **kwargs):
+        if kwargs.get("edit"):
+            self.buttons.append(kwargs["enable"])
+            return name
+        return self.create_control("button", kwargs)
+
+    def set_parent(self, **kwargs):
+        if kwargs != {"query": True}:
+            raise AssertionError("Unexpected setParent request: {}".format(kwargs))
+        return self.dialog_form
+
+    def form_layout(self, name, **kwargs):
+        if name != self.dialog_form or not kwargs.get("edit"):
+            raise AssertionError("Unexpected formLayout edit")
+        self.form_edits.append(kwargs)
+        return name
+
+    def layout_dialog(self, **kwargs):
+        if "dismiss" in kwargs:
+            self.dismissals.append(kwargs["dismiss"])
+            return
         self.confirmations.append(kwargs)
+        kwargs["ui"]()
+        if self.before_dialog_return:
+            self.before_dialog_return()
+        for control in self.dialog_controls:
+            if control["kind"] == "button" and control["options"]["label"] == self.confirm:
+                control["options"]["command"]()
+                return self.dismissals[-1]
         return self.confirm
 
     def delete_ui(self, *args, **kwargs):
@@ -104,6 +147,154 @@ def available_release():
 
 
 class UpdateUiTests(unittest.TestCase):
+    def test_long_release_notes_are_complete_in_a_read_only_wrapping_field(self):
+        with loaded_updater_ui() as (module, environment):
+            release = available_release()
+            release["notes"] = ("A full changelog entry.\n" * 1000) + "FINAL_CHANGELOG_ENTRY"
+            module._release_dialog_contents(release)
+            fields = [control for control in environment.dialog_controls
+                      if control["kind"] == "scrollField"]
+            self.assertEqual(len(fields), 1)
+            options = fields[0]["options"]
+            self.assertEqual(options["text"], release["notes"])
+            self.assertTrue(options["text"].endswith("FINAL_CHANGELOG_ENTRY"))
+            self.assertFalse(options["editable"])
+            self.assertTrue(options["wordWrap"])
+            self.assertEqual(options["insertionPosition"], 0)
+
+    def test_missing_or_empty_release_notes_display_a_readable_placeholder(self):
+        for notes in (None, "", "missing"):
+            with self.subTest(notes=notes), loaded_updater_ui() as (module, environment):
+                release = available_release()
+                if notes == "missing":
+                    release.pop("notes")
+                else:
+                    release["notes"] = notes
+                module._release_dialog_contents(release)
+                field = next(control for control in environment.dialog_controls
+                             if control["kind"] == "scrollField")
+                self.assertEqual(field["options"]["text"], "该版本未提供更新说明。")
+
+    def test_dialog_size_is_fixed_independently_of_changelog_length(self):
+        dimensions = []
+        for notes in ("Short notes", "Long changelog entry.\n" * 1000):
+            with self.subTest(length=len(notes)), loaded_updater_ui() as (module, environment):
+                release = available_release()
+                release["notes"] = notes
+                module._release_dialog_contents(release)
+                sizes = [(edit["width"], edit["height"]) for edit in environment.form_edits
+                         if "width" in edit and "height" in edit]
+                self.assertEqual(sizes, [(560, 460)])
+                dimensions.append(sizes)
+        self.assertEqual(dimensions[0], dimensions[1])
+
+    def test_only_notes_scroll_and_all_actions_remain_anchored_at_the_bottom(self):
+        with loaded_updater_ui() as (module, environment):
+            module._release_dialog_contents(available_release())
+            controls = environment.dialog_controls
+            self.assertTrue(all(control["options"]["parent"] == environment.dialog_form
+                                for control in controls))
+            buttons = [control for control in controls if control["kind"] == "button"]
+            self.assertEqual([button["options"]["label"] for button in buttons],
+                             ["立即更新", "打开发布页", "取消"])
+            self.assertTrue(all(button["options"]["height"] == 32 for button in buttons))
+            notes = next(control["name"] for control in controls if control["kind"] == "scrollField")
+            heading, notice = [control["name"] for control in controls if control["kind"] == "text"]
+            attached = environment.form_edits[-1]
+            for button in buttons:
+                self.assertIn((button["name"], "bottom", 12), attached["attachForm"])
+            self.assertIn((notes, "top", 8, heading), attached["attachControl"])
+            self.assertIn((notes, "bottom", 8, notice), attached["attachControl"])
+            self.assertIn((notice, "bottom", 10, buttons[0]["name"]), attached["attachControl"])
+            self.assertEqual(attached["attachPosition"],
+                             [(buttons[0]["name"], "right", 4, 33),
+                              (buttons[1]["name"], "left", 4, 33),
+                              (buttons[1]["name"], "right", 4, 66),
+                              (buttons[2]["name"], "left", 4, 66)])
+
+    def test_each_action_button_dismisses_with_its_own_choice_and_no_side_effects(self):
+        with loaded_updater_ui() as (module, environment):
+            with patch.object(module, "_worker") as worker, patch.object(module.webbrowser, "open") as open_page:
+                module._release_dialog_contents(available_release())
+                buttons = [control for control in environment.dialog_controls if control["kind"] == "button"]
+                for button in buttons:
+                    button["options"]["command"]("fixture Maya callback argument")
+                worker.assert_not_called()
+                open_page.assert_not_called()
+            self.assertEqual(environment.dismissals, ["立即更新", "打开发布页", "取消"])
+            self.assertEqual(environment.session.cancels, [])
+
+    def test_cancel_receives_default_keyboard_focus(self):
+        with loaded_updater_ui() as (module, environment):
+            module._release_dialog_contents(available_release())
+            cancel = next(control["name"] for control in environment.dialog_controls
+                          if control["kind"] == "button" and control["options"]["label"] == "取消")
+            self.assertEqual(environment.focuses, [cancel])
+
+    def test_fixed_modal_dialog_uses_only_flags_supported_by_each_maya_version(self):
+        for year in range(2022, 2028):
+            with self.subTest(year=year), loaded_updater_ui() as (module, environment):
+                self.assertEqual(module._release_dialog(available_release(), year), "取消")
+                self.assertEqual(len(environment.confirmations), 1)
+                options = environment.confirmations[0]
+                self.assertEqual(options["title"], "圆柱重分段更新")
+                self.assertTrue(callable(options["ui"]))
+                if year >= 2025:
+                    self.assertIs(options["resizable"], False)
+                else:
+                    self.assertNotIn("resizable", options)
+
+    def test_close_button_and_unknown_dialog_results_are_normalized_to_cancel(self):
+        for answer in ("dismiss", None, "", "unexpected answer", "取消"):
+            with self.subTest(answer=answer), loaded_updater_ui() as (module, environment):
+                environment.confirm = answer
+                self.assertEqual(module._release_dialog(available_release(), 2024), "取消")
+
+    def test_close_button_and_unknown_dialog_results_do_not_install_or_open_a_page(self):
+        for answer in ("dismiss", None, "unexpected answer"):
+            with self.subTest(answer=answer), loaded_updater_ui() as (module, environment):
+                environment.confirm = answer
+                with patch.object(module, "_worker") as worker, patch.object(module.webbrowser, "open") as open_page:
+                    module._checked(environment.session, available_release(), None)
+                worker.assert_not_called()
+                open_page.assert_not_called()
+                self.assertEqual(environment.session.cancels, [])
+                self.assertFalse(environment.ui._UPDATING)
+                self.assertFalse(environment.session._busy)
+                self.assertIsNone(module._JOB)
+
+    def test_install_waits_for_the_modal_dialog_to_return_explicit_confirmation(self):
+        with loaded_updater_ui() as (module, environment):
+            environment.confirm = "立即更新"
+            with patch.object(module, "_worker") as worker:
+                def before_return():
+                    worker.assert_not_called()
+                    self.assertEqual(environment.session.cancels, [])
+                    self.assertFalse(environment.ui._UPDATING)
+                    self.assertFalse(environment.session._busy)
+                environment.before_dialog_return = before_return
+                module._checked(environment.session, available_release(), None)
+            worker.assert_called_once()
+            self.assertEqual(environment.session.cancels, [{"silent": True}])
+
+    def test_window_closed_or_replaced_while_dialog_is_open_prevents_install(self):
+        for changed in ("closed", "replaced"):
+            with self.subTest(changed=changed), loaded_updater_ui() as (module, environment):
+                environment.confirm = "立即更新"
+
+                def before_return():
+                    if changed == "closed":
+                        environment.window = False
+                    else:
+                        environment.ui._SESSION = Session()
+
+                environment.before_dialog_return = before_return
+                with patch.object(module, "_worker") as worker:
+                    module._checked(environment.session, available_release(), None)
+                worker.assert_not_called()
+                self.assertEqual(environment.session.cancels, [])
+                self.assertFalse(environment.ui._UPDATING)
+
     def test_maya_version_is_captured_before_the_check_worker(self):
         for year in range(2022, 2028):
             with self.subTest(year=year), loaded_updater_ui() as (module, environment):
