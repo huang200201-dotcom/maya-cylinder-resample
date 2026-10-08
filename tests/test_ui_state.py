@@ -293,6 +293,7 @@ class AdapterContractTests(unittest.TestCase):
             def load_plugin(path, **kwargs):
                 loaded.add(Path(path).stem)
                 loads.append(path)
+                setattr(self.adapter.cmds, "crCreateMesh_" + Path(path).stem, lambda **kwargs: None)
 
             commands = self.adapter.cmds
             with patch.object(self.adapter, "__file__", str(source / "adapter.py")), \
@@ -320,15 +321,38 @@ class AdapterContractTests(unittest.TestCase):
             root = Path(directory)
             (root / "mesh_command.py").write_text("COMMAND = 'fixture'\n", encoding="utf-8")
             commands = self.adapter.cmds
+
+            def load_plugin(path, **kwargs):
+                setattr(commands, "crCreateMesh_" + Path(path).stem, lambda **kwargs: None)
+
             with patch.object(self.adapter, "__file__", str(root / "adapter.py")), \
                     patch.object(commands, "internalVar", lambda **kwargs: str(root), create=True), \
                     patch.object(commands, "pluginInfo", lambda *args, **kwargs: False, create=True), \
-                    patch.object(commands, "loadPlugin", lambda *args, **kwargs: None, create=True):
+                    patch.object(commands, "loadPlugin", load_plugin, create=True):
                 self.adapter._ensure_mesh_command()
                 plugin = next((root / "CylinderResample" / "plugins").glob("*.py"))
                 plugin.write_text("COMMAND = 'tampered'\n", encoding="utf-8")
                 with self.assertRaises(ValueError):
                     self.adapter._ensure_mesh_command()
+
+    def test_mesh_command_load_failure_reports_actionable_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            commands = self.adapter.cmds
+            with patch.object(commands, "internalVar", return_value=directory, create=True), \
+                    patch.object(commands, "pluginInfo", return_value=False, create=True), \
+                    patch.object(commands, "loadPlugin", side_effect=RuntimeError("fixture plugin failure"), create=True):
+                with self.assertRaisesRegex(self.adapter.ToolError, "创建网格命令加载失败.*fixture plugin failure"):
+                    self.adapter._ensure_mesh_command()
+
+    def test_mesh_command_missing_registration_does_not_return_unusable_name(self):
+        for loaded in (False, True):
+            with self.subTest(loaded=loaded), tempfile.TemporaryDirectory() as directory:
+                commands = self.adapter.cmds
+                with patch.object(commands, "internalVar", return_value=directory, create=True), \
+                        patch.object(commands, "pluginInfo", return_value=loaded, create=True), \
+                        patch.object(commands, "loadPlugin", return_value=None, create=True):
+                    with self.assertRaisesRegex(self.adapter.ToolError, "创建网格命令未成功注册"):
+                        self.adapter._ensure_mesh_command()
 
     def test_snapshot_handle_resolves_renamed_source_and_rejects_deleted_source(self):
         source = SCENE.add_source()

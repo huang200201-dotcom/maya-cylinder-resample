@@ -1,16 +1,9 @@
 """Undoable Maya API 2.0 command used by the modeling tool."""
 
 import json
-import os
 import re
 
 import maya.api.OpenMaya as om
-
-
-# The adapter copies this template to a versioned cache before Maya loads it.
-COMMAND = "crCreateMesh_" + os.path.splitext(os.path.basename(__file__))[0]
-_CACHE_VERSION = re.match(r"cr_mesh_v(\d+)_(\d+)_(\d+)_", os.path.basename(__file__))
-PLUGIN_VERSION = ".".join(_CACHE_VERSION.groups()) if _CACHE_VERSION else "0.0.0"
 
 
 def maya_useNewAPI():
@@ -95,9 +88,16 @@ class CreateMeshCommand(om.MPxCommand):
 
 
 def initializePlugin(plugin):
-    om.MFnPlugin(plugin, "CylinderResample", PLUGIN_VERSION, "Any").registerCommand(
-        COMMAND, CreateMeshCommand.creator, CreateMeshCommand.syntax_creator)
+    function = om.MFnPlugin(plugin, "CylinderResample", "0.0.0", "Any")
+    # Maya's script plug-in loader does not always provide __file__.
+    plugin_name = function.name()
+    version = re.match(r"cr_mesh_v(\d+)_(\d+)_(\d+)_", plugin_name)
+    if version:
+        function.version = ".".join(version.groups())
+    function.registerCommand("crCreateMesh_" + plugin_name,
+                             CreateMeshCommand.creator, CreateMeshCommand.syntax_creator)
 
 
 def uninitializePlugin(plugin):
-    om.MFnPlugin(plugin).deregisterCommand(COMMAND)
+    function = om.MFnPlugin(plugin)
+    function.deregisterCommand("crCreateMesh_" + function.name())

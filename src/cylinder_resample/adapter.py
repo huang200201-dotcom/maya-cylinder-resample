@@ -250,8 +250,14 @@ def _ensure_mesh_command():
     except RuntimeError:
         loaded = False
     if not loaded:
-        cmds.loadPlugin(plugin, quiet=True)
-    return "crCreateMesh_" + plugin_name
+        try:
+            cmds.loadPlugin(plugin, quiet=True)
+        except Exception as error:
+            raise ToolError("创建网格命令加载失败，请检查 Maya 脚本编辑器中的插件错误：{}".format(error)) from error
+    command = "crCreateMesh_" + plugin_name
+    if not callable(getattr(cmds, command, None)):
+        raise ToolError("创建网格命令未成功注册，请检查 Maya 脚本编辑器中的插件错误，或更新并重新安装插件。")
+    return command
 
 
 def build_result(snapshot, target_count, shape_mode="contour", preserve_uvs=True,
