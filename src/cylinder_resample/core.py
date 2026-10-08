@@ -335,8 +335,20 @@ def _sub(a, b):
     return tuple(x - y for x, y in zip(a, b))
 
 
+def _norm(values):
+    # Two-argument hypot is available in Maya 2022's Python 3.7 and stays scaled.
+    length = 0.0
+    for value in values:
+        length = math.hypot(length, value)
+    return length
+
+
+def _distance(a, b):
+    return _norm(_sub(a, b))
+
+
 def _ring_lengths(ring_points):
-    lengths = [math.dist(point, ring_points[(i + 1) % len(ring_points)])
+    lengths = [_distance(point, ring_points[(i + 1) % len(ring_points)])
                for i, point in enumerate(ring_points)]
     longest = max(lengths)
     if not math.isfinite(longest) or longest == 0.0 or min(lengths) <= longest * 1.0e-12:
@@ -352,7 +364,7 @@ def _polyline_point(source, t):
 
 def _valid_face(face, points):
     local = [_sub(points[vertex], points[face[0]]) for vertex in face]
-    scale = max(math.hypot(*point) for point in local)
+    scale = max(_norm(point) for point in local)
     if not math.isfinite(scale) or scale == 0.0:
         return False
     local = [tuple(value / scale for value in point) for point in local]
@@ -360,7 +372,7 @@ def _valid_face(face, points):
     for i, point in enumerate(local):
         cross = _cross(point, local[(i + 1) % len(local)])
         normal = [a + b for a, b in zip(normal, cross)]
-    return math.hypot(*normal) > 1.0e-14
+    return _norm(normal) > 1.0e-14
 
 
 def _dot(a, b):
@@ -372,7 +384,7 @@ def _cross(a, b):
 
 
 def _unit(value):
-    length = math.sqrt(_dot(value, value))
+    length = _norm(value)
     if length < _EPS:
         raise ResampleError("有圆周环退化，无法拟合圆形。")
     return tuple(x / length for x in value)
@@ -397,7 +409,7 @@ def _solve(matrix, values):
 def _circle_sampler(ring_points, return_deltas=False):
     n = len(ring_points)
     origin = tuple(sum(point[j] for point in ring_points) / n for j in range(3))
-    scale = max(math.dist(point, origin) for point in ring_points)
+    scale = max(_distance(point, origin) for point in ring_points)
     if not math.isfinite(scale) or scale == 0.0:
         raise ResampleError("有圆周环退化，无法拟合圆形。")
     local = [tuple(value / scale for value in _sub(point, origin)) for point in ring_points]

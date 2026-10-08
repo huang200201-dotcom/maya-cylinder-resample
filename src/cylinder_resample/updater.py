@@ -29,7 +29,7 @@ PACKAGE_PREFIX = "scripts/cylinder_resample/"
 ARCHIVE_PREFIX = "CylinderResample/"
 REQUIRED_FILES = {
     "__init__.py", "core.py", "adapter.py", "ui.py", "updater.py",
-    "config.json", "mesh_command.py", "update_ui.py",
+    "config.json", "mesh_command.py", "update_ui.py", "compat.py",
 }
 _VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 _REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}\Z")
@@ -216,7 +216,19 @@ def _asset(asset, repository, expected_name, limit):
     return {"name": expected_name, "size": size, "url": asset["url"]}
 
 
-def _validate_manifest(manifest, version, archive_asset):
+def _maya_version(value=None):
+    from .compat import MAX_MAYA, MIN_MAYA, maya_year
+    try:
+        year = maya_year(2024 if value is None else value)
+    except (TypeError, ValueError):
+        raise UpdaterError("无法识别用于更新检查的 Maya 版本。") from None
+    if not MIN_MAYA <= year <= MAX_MAYA:
+        raise UpdaterError("插件仅支持 Maya {} 至 {}。".format(MIN_MAYA, MAX_MAYA))
+    return year
+
+
+def _validate_manifest(manifest, version, archive_asset, maya_version=None):
+    year = _maya_version(maya_version)
     _version(version)
     if (not isinstance(manifest, dict) or not isinstance(manifest.get("schema_version"), int)
             or manifest.get("schema_version") != 1
@@ -226,8 +238,10 @@ def _validate_manifest(manifest, version, archive_asset):
     minimum, maximum = manifest.get("maya_min"), manifest.get("maya_max")
     if (not isinstance(minimum, int) or isinstance(minimum, bool)
             or not isinstance(maximum, int) or isinstance(maximum, bool)
-            or not minimum <= 2024 <= maximum):
-        raise UpdaterError("该更新不支持 Maya 2024。")
+            or not 2000 <= minimum <= maximum <= 9999):
+        raise UpdaterError("更新清单的 Maya 兼容范围无效。")
+    if not minimum <= year <= maximum:
+        raise UpdaterError("该更新不支持 Maya {}；支持范围为 {} 至 {}。".format(year, minimum, maximum))
     archive = manifest.get("archive")
     if (not isinstance(archive, dict) or archive.get("name") != archive_asset["name"]
             or archive.get("size") != archive_asset["size"]
@@ -268,9 +282,16 @@ def _python_version(data):
             if any(isinstance(target, ast.Name) and target.id == "__version__"
                    for target in statement.targets):
                 values.append(statement.value)
-    if len(values) != 1 or not isinstance(values[0], ast.Constant):
+    bindings = [node for node in ast.walk(tree)
+                if isinstance(node, ast.Name) and node.id == "__version__"
+                and isinstance(node.ctx, (ast.Store, ast.Del))]
+    literal_types = (ast.Str, getattr(ast, "Constant", ast.Str))
+    if len(values) != 1 or len(bindings) != 1 or not isinstance(values[0], literal_types):
         raise UpdaterError("插件包缺少明确的版本号。")
-    value = values[0].value
+    try:
+        value = ast.literal_eval(values[0])
+    except (ValueError, TypeError, SyntaxError, RecursionError):
+        raise UpdaterError("插件包缺少明确的版本号。") from None
     _version(value)
     return value
 
@@ -342,7 +363,8 @@ def _validated_package(archive_bytes, manifest):
     return contents
 
 
-def check_for_update(current_version=None, repository=None, token=None):
+def check_for_update(current_version=None, repository=None, token=None, maya_version=None):
+    year = _maya_version(maya_version)
     if current_version is None:
         from . import __version__
         current_version = __version__
@@ -376,7 +398,7 @@ def check_for_update(current_version=None, repository=None, token=None):
     manifest_bytes = _request(manifest_asset["url"], JSON_LIMIT, token, "application/octet-stream")
     if len(manifest_bytes) != manifest_asset["size"]:
         raise UpdaterError("更新清单下载不完整。")
-    manifest = _validate_manifest(_json(manifest_bytes), version, archive_asset)
+    manifest = _validate_manifest(_json(manifest_bytes), version, archive_asset, maya_version=year)
     notes = release.get("body") or ""
     if not isinstance(notes, str):
         raise UpdaterError("Release 更新说明无效。")
@@ -384,7 +406,7 @@ def check_for_update(current_version=None, repository=None, token=None):
         "available": latest > current, "current": current_version, "version": version,
         "release_url": release_url, "notes": notes, "repository": repository,
         "assets": [archive_asset, manifest_asset], "archive_asset": archive_asset,
-        "manifest_asset": manifest_asset, "manifest": manifest,
+        "manifest_asset": manifest_asset, "manifest": manifest, "maya_version": year,
     }
 
 
@@ -451,15 +473,19 @@ def _update_lock(parent):
             pass
 
 
-def install_release(release, install_dir=None, token=None):
+def install_release(release, install_dir=None, token=None, maya_version=None):
     if not isinstance(release, dict):
         raise UpdaterError("请先检查更新，再安装正式 Release。")
+    checked_year = release.get("maya_version")
+    year = _maya_version(checked_year if maya_version is None else maya_version)
+    if checked_year is not None and _maya_version(checked_year) != year:
+        raise UpdaterError("Maya 版本与检查更新时不一致，请重新检查更新。")
     repository = _repository(release.get("repository"))
     version = release.get("version")
     _version(version)
     archive_name = "CylinderResample_Maya2024_v{}.zip".format(version)
     archive_asset = _asset(release.get("archive_asset"), repository, archive_name, ARCHIVE_LIMIT)
-    manifest = _validate_manifest(release.get("manifest"), version, archive_asset)
+    manifest = _validate_manifest(release.get("manifest"), version, archive_asset, maya_version=year)
     target = _target(install_dir)
     previous_version = _installed_version(target)
     if _version(version) <= _version(previous_version):
@@ -510,6 +536,7 @@ def install_release(release, install_dir=None, token=None):
     return {
         "version": version, "previous_version": previous_version,
         "backup_dir": str(backup), "install_dir": str(target), "repository": repository,
+        "maya_version": year,
     }
 
 

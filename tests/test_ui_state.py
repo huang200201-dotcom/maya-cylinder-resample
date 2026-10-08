@@ -649,7 +649,8 @@ class SessionStateTests(unittest.TestCase):
         SCENE.undo()
         self.assertTrue(preview.alive)
         self.assertFalse(self.source.attrs["visibility"])
-        with patch.object(self.ui_module.Session, "make_window", lambda session: "FixtureWindow"):
+        with patch.object(self.ui_module.Session, "make_window", lambda session: "FixtureWindow"), \
+                patch.object(self.ui_module, "ensure_supported", return_value=2024):
             self.ui_module.show()
         reopened = self.ui_module._SESSION
         self.assertFalse(preview.alive)

@@ -1,6 +1,6 @@
-"""Cylinder Resample, a Maya 2024 modeling tool."""
+"""Cylinder Resample, a Maya 2022-2027 modeling tool (Python 3)."""
 
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 
 def show():

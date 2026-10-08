@@ -10,6 +10,7 @@ import maya.cmds as cmds
 import maya.utils as maya_utils
 
 from . import __version__, updater
+from .compat import ensure_supported
 
 
 _JOB = None
@@ -41,10 +42,16 @@ def check(session):
     if _JOB is not None:
         session.message("已有更新操作正在进行，请稍候。")
         return
+    try:
+        year = ensure_supported()
+    except (ValueError, RuntimeError) as error:
+        session.message(str(error), error=True)
+        return
     _JOB = {"session": session, "installing": False}
     _button(session, False)
     session.message("正在检查 GitHub 发布版本…")
-    _worker(lambda: updater.check_for_update(__version__), lambda result, error: _checked(session, result, error))
+    _worker(lambda: updater.check_for_update(__version__, maya_version=year),
+            lambda result, error: _checked(session, result, error))
 
 
 def _checked(session, release, error):
@@ -75,6 +82,7 @@ def _checked(session, release, error):
         return
     from . import ui
     try:
+        year = ensure_supported()
         session.cancel(silent=True)
     except Exception as exc:
         session.message("预览未能清理，已取消更新：{}".format(exc), error=True)
@@ -84,7 +92,8 @@ def _checked(session, release, error):
     _JOB = {"session": session, "installing": True}
     _button(session, False)
     session.message("正在下载、校验并安装 {}…".format(release["version"]))
-    _worker(lambda: updater.install_release(release), lambda result, failure: _installed(session, result, failure))
+    _worker(lambda: updater.install_release(release, maya_version=year),
+            lambda result, failure: _installed(session, result, failure))
 
 
 def _package_modules():

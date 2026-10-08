@@ -53,6 +53,9 @@ class Environment:
         self.ui.Session = Session
         self.ui.show = self.show_old_ui
         self.cmds = types.ModuleType("maya.cmds")
+        self.maya_version = "2024"
+        self.version_reads = []
+        self.cmds.about = self.about
         self.cmds.window = lambda *args, **kwargs: self.window
         self.cmds.control = lambda *args, **kwargs: True
         self.cmds.button = lambda name, **kwargs: self.buttons.append(kwargs["enable"])
@@ -64,6 +67,10 @@ class Environment:
         self.utils.executeDeferred = self.deferred.append
         self.maya = types.ModuleType("maya")
         self.maya.cmds, self.maya.utils = self.cmds, self.utils
+
+    def about(self, **kwargs):
+        self.version_reads.append(kwargs)
+        return self.maya_version
 
     def confirm_dialog(self, **kwargs):
         self.confirmations.append(kwargs)
@@ -97,6 +104,45 @@ def available_release():
 
 
 class UpdateUiTests(unittest.TestCase):
+    def test_maya_version_is_captured_before_the_check_worker(self):
+        for year in range(2022, 2028):
+            with self.subTest(year=year), loaded_updater_ui() as (module, environment):
+                environment.maya_version = str(year)
+                actions = []
+                with patch.object(module, "_worker", lambda action, finish: actions.append(action)):
+                    module.check(environment.session)
+                self.assertEqual(environment.version_reads, [{"majorVersion": True}])
+                with patch.object(environment.cmds, "about", side_effect=AssertionError("Maya queried from worker")), \
+                        patch.object(module.updater, "check_for_update") as check:
+                    actions.pop()()
+                check.assert_called_once_with(module.__version__, maya_version=year)
+
+    def test_maya_version_is_captured_before_the_install_worker(self):
+        for year in range(2022, 2028):
+            with self.subTest(year=year), loaded_updater_ui() as (module, environment):
+                environment.maya_version = str(year)
+                environment.confirm = "立即更新"
+                actions = []
+                release = available_release()
+                with patch.object(module, "_worker", lambda action, finish: actions.append(action)):
+                    module._checked(environment.session, release, None)
+                self.assertEqual(environment.version_reads, [{"majorVersion": True}])
+                with patch.object(environment.cmds, "about", side_effect=AssertionError("Maya queried from worker")), \
+                        patch.object(module.updater, "install_release") as install:
+                    actions.pop()()
+                install.assert_called_once_with(release, maya_version=year)
+
+    def test_unsupported_maya_does_not_start_update_or_cancel_preview(self):
+        with loaded_updater_ui() as (module, environment):
+            environment.maya_version = "2028"
+            environment.confirm = "立即更新"
+            with patch.object(module, "_worker") as worker:
+                module.check(environment.session)
+                module._checked(environment.session, available_release(), None)
+            worker.assert_not_called()
+            self.assertEqual(environment.session.cancels, [])
+            self.assertFalse(environment.ui._UPDATING)
+
     def test_worker_runs_action_then_defers_ui_completion_and_captures_failure(self):
         with loaded_updater_ui() as (module, environment):
             finished = Mock()

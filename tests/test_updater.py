@@ -510,5 +510,154 @@ class AtomicInstallTests(unittest.TestCase):
             self.assertEqual(updater._installed_version(target), "0.4.0")
 
 
+class MayaCompatibilityTests(unittest.TestCase):
+    def broad_release(self):
+        data, release, files = fixture_package()
+        release["manifest"].update(maya_min=2022, maya_max=2027)
+        return data, release, files
+
+    def test_manifest_accepts_each_supported_maya_year_and_point_release(self):
+        _, release, _ = self.broad_release()
+        for year in range(2022, 2028):
+            for value in (year, str(year), str(year) + ".2"):
+                with self.subTest(maya_version=value):
+                    manifest = release["manifest"]
+                    self.assertIs(updater._validate_manifest(
+                        manifest, "0.3.0", release["archive_asset"], maya_version=value), manifest)
+
+    def test_manifest_retains_legacy_default_and_allows_future_compatible_ranges(self):
+        _, release, _ = fixture_package()
+        manifest = release["manifest"]
+        self.assertIs(updater._validate_manifest(manifest, "0.3.0", release["archive_asset"]), manifest)
+        manifest.update(maya_min=2022, maya_max=2028)
+        self.assertIs(updater._validate_manifest(
+            manifest, "0.3.0", release["archive_asset"], maya_version=2027), manifest)
+
+    def test_manifest_rejects_invalid_ranges_and_unsupported_year(self):
+        _, release, _ = self.broad_release()
+        for minimum, maximum in ((True, 2027), (2022, True), (2022.0, 2027),
+                                 ("2022", 2027), (2022, None), (2027, 2022),
+                                 (1999, 2027), (2022, 10000)):
+            with self.subTest(minimum=minimum, maximum=maximum):
+                manifest = dict(release["manifest"], maya_min=minimum, maya_max=maximum)
+                with self.assertRaises(updater.UpdaterError):
+                    updater._validate_manifest(manifest, "0.3.0", release["archive_asset"], maya_version=2024)
+        for year in (2021, 2028, True, 2024.0, "Maya 2024", "2024foo", "2024.2x", "", []):
+            with self.subTest(maya_version=year):
+                with self.assertRaises(updater.UpdaterError):
+                    updater._validate_manifest(
+                        release["manifest"], "0.3.0", release["archive_asset"], maya_version=year)
+
+    def test_manifest_rejection_names_actual_maya_version(self):
+        _, release, _ = fixture_package()
+        for year in (2022, 2023, 2025, 2026, 2027):
+            with self.subTest(maya_version=year):
+                with self.assertRaisesRegex(updater.UpdaterError, "Maya " + str(year)):
+                    updater._validate_manifest(
+                        release["manifest"], "0.3.0", release["archive_asset"], maya_version=year)
+
+    def test_check_for_update_records_actual_maya_year(self):
+        _, checked, _ = self.broad_release()
+        manifest_bytes = json_bytes(checked["manifest"])
+        manifest_asset = {
+            "name": "update-manifest.json", "size": len(manifest_bytes), "state": "uploaded",
+            "url": "https://api.github.com/repos/%s/releases/assets/124" % REPOSITORY,
+        }
+        metadata = {
+            "draft": False, "prerelease": False, "tag_name": "v0.3.0",
+            "html_url": "https://github.com/%s/releases/tag/v0.3.0" % REPOSITORY,
+            "body": "Multi-Maya fixture", "assets": [checked["archive_asset"], manifest_asset],
+        }
+        responses = {
+            "https://api.github.com/repos/%s/releases/latest" % REPOSITORY: json_bytes(metadata),
+            manifest_asset["url"]: manifest_bytes,
+        }
+        for year in range(2022, 2028):
+            with self.subTest(maya_version=year), patch.object(
+                    updater, "_request", side_effect=lambda url, *args: responses[url]):
+                result = updater.check_for_update("0.2.0", REPOSITORY, maya_version=str(year) + ".1")
+                self.assertEqual(result["maya_version"], year)
+                self.assertTrue(result["available"])
+                self.assertEqual(result["archive_asset"]["name"], "CylinderResample_Maya2024_v0.3.0.zip")
+
+    def test_invalid_actual_version_is_rejected_before_network_access(self):
+        for year in (2021, 2028, True, "invalid"):
+            with self.subTest(maya_version=year), patch.object(updater, "_request") as request:
+                with self.assertRaises(updater.UpdaterError):
+                    updater.check_for_update("0.2.0", maya_version=year)
+                request.assert_not_called()
+
+    def test_install_uses_checked_maya_year_without_explicit_argument(self):
+        data, release, files = self.broad_release()
+        for year in range(2022, 2028):
+            with self.subTest(maya_version=year), tempfile.TemporaryDirectory() as directory:
+                target = installed_fixture(directory)
+                checked = dict(release, maya_version=year)
+                with patch.object(updater, "_request", return_value=data):
+                    result = updater.install_release(checked, target)
+                self.assertEqual(result["maya_version"], year)
+                self.assertEqual(tree_bytes(target), files)
+
+    def test_install_accepts_explicit_actual_version_on_legacy_record(self):
+        data, release, files = self.broad_release()
+        with tempfile.TemporaryDirectory() as directory:
+            target = installed_fixture(directory)
+            with patch.object(updater, "_request", return_value=data):
+                result = updater.install_release(release, target, maya_version="2027.1")
+            self.assertEqual(result["maya_version"], 2027)
+            self.assertEqual(tree_bytes(target), files)
+
+    def test_install_conflicting_or_invalid_checked_year_never_touches_files(self):
+        _, release, _ = self.broad_release()
+        for checked_year, actual_year in ((2022, 2024), (2027, 2026), (2028, None),
+                                          (True, 2024), ("invalid", 2024)):
+            with self.subTest(checked=checked_year, actual=actual_year), tempfile.TemporaryDirectory() as directory:
+                target = installed_fixture(directory)
+                original = tree_bytes(target)
+                with patch.object(updater, "_request") as request:
+                    with self.assertRaises(updater.UpdaterError):
+                        updater.install_release(dict(release, maya_version=checked_year),
+                                                target, maya_version=actual_year)
+                request.assert_not_called()
+                self.assertEqual(tree_bytes(target), original)
+
+    def test_install_revalidates_manifest_against_checked_year(self):
+        _, release, _ = fixture_package()
+        with tempfile.TemporaryDirectory() as directory:
+            target = installed_fixture(directory)
+            original = tree_bytes(target)
+            with patch.object(updater, "_request") as request:
+                with self.assertRaisesRegex(updater.UpdaterError, "Maya 2022"):
+                    updater.install_release(dict(release, maya_version=2022), target)
+            request.assert_not_called()
+            self.assertEqual(tree_bytes(target), original)
+
+    def test_python_version_accepts_string_literals_across_ast_versions(self):
+        for payload in (b"__version__ = '0.3.0'\n", b'__version__ = u"0.3.0"\n',
+                        b"__version__ = ('0.3.0')\n"):
+            with self.subTest(payload=payload):
+                self.assertEqual(updater._python_version(payload), "0.3.0")
+
+    def test_python_version_rejects_dynamic_duplicate_and_nonstring_values(self):
+        payloads = (
+            b"__version__ = str('0.3.0')\n",
+            b"__version__ = '0.3.' + '0'\n",
+            b"__version__ = f'0.3.0'\n",
+            b"__version__ = b'0.3.0'\n",
+            b"__version__ = 0.3\n",
+            b"__version__ = ('0.3.0',)\n",
+            b"__version__ = '0.3.0'\n__version__ = '0.3.0'\n",
+            b"__version__ = '0.3.0'\nif True:\n    __version__ = '0.4.0'\n",
+            b"__version__ = '0.3.0'\n__version__ += '.1'\n",
+            b"__version__ = '0.3.0'\ndel __version__\n",
+            b"__version__: str = '0.3.0'\n",
+            b"if True:\n    __version__ = '0.3.0'\n",
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                with self.assertRaises(updater.UpdaterError):
+                    updater._python_version(payload)
+
+
 if __name__ == "__main__":
     unittest.main()

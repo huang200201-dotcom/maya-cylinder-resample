@@ -13,12 +13,13 @@ concurrency:
 
 jobs:
   test:
+    name: Python ${{ matrix.python }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python: ['3.10', '3.11', '3.12']
+        os: [ubuntu-22.04, windows-2022]
+        python: ['3.7', '3.9', '3.10', '3.11', '3.13']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -46,9 +47,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: >-
-          gh release create "$RELEASE_TAG"
-          dist/CylinderResample_Maya2024_v*.zip
-          dist/update-manifest.json
-          dist/CylinderResample_Maya2024_v*.zip.sha256
-          --verify-tag --title "$RELEASE_TAG" --notes-file CHANGELOG.md
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          gh release create "$RELEASE_TAG" \
+            "dist/CylinderResample_Maya2022-2027_v${VERSION}.zip" \
+            "dist/CylinderResample_Maya2022-2027_v${VERSION}.zip.sha256" \
+            "dist/CylinderResample_Maya2024_v${VERSION}.zip" \
+            "dist/CylinderResample_Maya2024_v${VERSION}.zip.sha256" \
+            dist/update-manifest.json \
+            --verify-tag --title "$RELEASE_TAG" --notes-file CHANGELOG.md

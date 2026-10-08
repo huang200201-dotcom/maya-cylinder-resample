@@ -2,7 +2,9 @@
 
 ## 开发环境
 
-代码兼容 Maya 2024 自带的 Python 3.10。几何核心与更新器使用标准库，不引入运行时依赖。Maya API 仅在 Maya 相关模块中导入，常规测试不应要求 Autodesk DLL。
+代码最低兼容 Python 3.7，适配 Windows / Maya 2022 至 2027；Maya 2022 只支持 Python 3 模式。几何核心与更新器使用标准库，不引入运行时依赖。Maya API 仅在 Maya 相关模块中导入，常规测试不应要求 Autodesk DLL。
+
+GitHub Actions 在 Windows 2022 和 Ubuntu 22.04 使用 Python 3.7、3.9、3.10、3.11、3.13 运行测试与构建验证。必须实际运行旧解释器，不得仅依赖新 Python 的语法静态检查或因缺少新版接口跳过测试。`compat.py` 集中管理最低运行环境和 Maya 版本范围；新增接口要检查 Python 3.7 可用性。构建依赖 `setuptools>=61`，安装插件本身不需要 pip 或 setuptools。
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -10,7 +12,7 @@ python tools/build_release.py --output-dir dist
 python tools/build_release.py --verify-only --output-dir dist
 ```
 
-修改 `core.py` 时增加对应几何/UV 测试；修改预览或撤销逻辑时同时补充模拟会话测试与 Maya 实机验证步骤；修改更新器时覆盖网络失败、损坏包、路径穿越、文件切换和回滚。
+修改 `core.py` 时增加对应几何/UV 测试；修改预览或撤销逻辑时同时补充模拟会话测试与 Maya 实机验证步骤；修改更新器时覆盖网络失败、损坏包、路径穿越、文件切换、回滚，以及当前 Maya 主版本和发布清单范围的匹配。
 
 ## 提交与审核
 

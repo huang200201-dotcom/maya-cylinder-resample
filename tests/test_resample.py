@@ -93,8 +93,13 @@ def nonuniform_cylinder(angles=None, profile=((1.0, 0.0), (1.0, 2.0))):
     return points, faces, seed
 
 
+def point_distance(a, b):
+    delta = [x - y for x, y in zip(a, b)]
+    return math.hypot(math.hypot(delta[0], delta[1]), delta[2])
+
+
 def distances(points):
-    return [math.dist(point, points[(i + 1) % len(points)])
+    return [point_distance(point, points[(i + 1) % len(points)])
             for i, point in enumerate(points)]
 
 
@@ -244,7 +249,7 @@ class CylinderResampleTests(unittest.TestCase):
             ratio = (distance - cumulative[edge]) / source_edges[edge]
             expected_point = tuple(points[edge][axis] * (1.0 - ratio)
                                    + points[(edge + 1) % 12][axis] * ratio for axis in range(3))
-            self.assertLess(math.dist(point, expected_point), 1e-8)
+            self.assertLess(point_distance(point, expected_point), 1e-8)
         self.assert_valid_mesh(result)
         self.assert_outward(result)
 
@@ -312,7 +317,7 @@ class CylinderResampleTests(unittest.TestCase):
         for column in pins:
             point = points[column]
             vertex = next(index for index, sampled in enumerate(result["points"])
-                          if math.dist(point, sampled) < 1e-8)
+                          if point_distance(point, sampled) < 1e-8)
             self.assertEqual(len(usage[vertex]), 2)
         with self.assertRaises(ValueError):
             resample_mesh(points, faces, seed, 4, uv_sets, shape_mode="uniform")

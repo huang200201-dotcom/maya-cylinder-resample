@@ -6,6 +6,7 @@ import maya.cmds as cmds
 
 from . import adapter
 from . import __version__
+from .compat import ensure_supported
 
 
 WINDOW = "CylinderResampleWindow"
@@ -278,7 +279,8 @@ class Session:
         return cmds.optionVar(query=name) if cmds.optionVar(exists=name) else default
 
     def make_window(self):
-        cmds.window(WINDOW, title="圆柱重分段 {} | Maya 2024".format(__version__), widthHeight=(480, 680), sizeable=True)
+        year = ensure_supported()
+        cmds.window(WINDOW, title="圆柱重分段 {} | Maya {}".format(__version__, year), widthHeight=(480, 680), sizeable=True)
         cmds.scrollLayout(childResizable=True)
         cmds.columnLayout(adjustableColumn=True, rowSpacing=10, columnAttach=("both", 12))
         cmds.separator(height=6, style="none")
@@ -343,6 +345,7 @@ def show():
     if _UPDATING:
         cmds.warning("插件正在更新，请稍候。")
         return WINDOW
+    ensure_supported()
     if cmds.window(WINDOW, exists=True):
         cmds.deleteUI(WINDOW)
     records = _SESSION.preview_records if _SESSION else []

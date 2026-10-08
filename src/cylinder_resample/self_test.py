@@ -4,9 +4,11 @@ import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from . import adapter
+from .compat import ensure_supported
 
 
 def run():
+    year = ensure_supported()
     selection = om.MGlobal.getActiveSelectionList()
     created = []
     try:
@@ -54,7 +56,7 @@ def run():
                     raise RuntimeError("自检发现新增段数分布异常。")
         if adapter.snapshot_mesh(shape, seed)["fingerprint"] != snapshot["fingerprint"]:
             raise RuntimeError("自检发现源模型发生了变化。")
-        message = "Maya {} 兼容自检通过：三种重分段模式、均衡分布、UV 读写与当前 UV 集、源网格保留。".format(cmds.about(version=True))
+        message = "Maya {} 兼容自检通过：三种重分段模式、均衡分布、UV 读写与当前 UV 集、源网格保留。".format(year)
         print(message)
         return message
     finally:

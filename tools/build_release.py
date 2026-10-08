@@ -17,7 +17,7 @@ PACKAGE_PREFIX = "scripts/cylinder_resample/"
 VERSION_PATTERN = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\Z")
 REQUIRED = {
     "__init__.py", "core.py", "adapter.py", "ui.py", "updater.py",
-    "mesh_command.py", "update_ui.py", "config.json",
+    "mesh_command.py", "update_ui.py", "compat.py", "config.json",
 }
 
 
@@ -50,7 +50,11 @@ def source_bytes(root, path):
         current = current / part
         if current.is_symlink():
             raise ValueError("Symlink source is not allowed: " + str(relative))
-    if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        raise ValueError("Source must be a file inside the repository: " + str(path))
+    if not path.is_file():
         raise ValueError("Source must be a file inside the repository: " + str(path))
     data = path.read_bytes().replace(b"\r\n", b"\n")
     if path.suffix == ".py":
@@ -90,12 +94,24 @@ def release_files(root=ROOT):
     return files
 
 
+def write_text(path, text, encoding):
+    with path.open("w", encoding=encoding, newline="\n") as stream:
+        stream.write(text)
+
+
+def archive_names(version):
+    # Keep the historic name so 0.3.x update clients can discover this release.
+    return ("CylinderResample_Maya2024_v" + version + ".zip",
+            "CylinderResample_Maya2022-2027_v" + version + ".zip")
+
+
 def build(output_dir, root=ROOT):
     version = read_version(root)
     files = release_files(root)
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    archive = output / ("CylinderResample_Maya2024_v" + version + ".zip")
+    historic_name, universal_name = archive_names(version)
+    archive = output / historic_name
     temporary = archive.with_name(archive.name + ".tmp")
     try:
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as package:
@@ -110,30 +126,36 @@ def build(output_dir, root=ROOT):
         if temporary.exists():
             temporary.unlink()
     archive_data = archive.read_bytes()
+    universal_archive = output / universal_name
+    universal_archive.write_bytes(archive_data)
     manifest = {
         "schema_version": 1,
         "version": version,
-        "maya_min": 2024,
-        "maya_max": 2024,
+        "maya_min": 2022,
+        "maya_max": 2027,
         "archive": {"name": archive.name, "size": len(archive_data), "sha256": digest(archive_data)},
         "files": {name: digest(data) for name, data in sorted(files.items()) if name.startswith(PACKAGE_PREFIX)},
     }
     manifest_path = output / "update-manifest.json"
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=True, indent=2) + "\n", encoding="utf-8", newline="\n")
-    checksum_path = output / (archive.name + ".sha256")
-    checksum_path.write_text(manifest["archive"]["sha256"] + "  " + archive.name + "\n", encoding="ascii", newline="\n")
+    write_text(manifest_path, json.dumps(manifest, ensure_ascii=True, indent=2) + "\n", "utf-8")
+    checksum_paths = []
+    for name in (historic_name, universal_name):
+        checksum_path = output / (name + ".sha256")
+        write_text(checksum_path, manifest["archive"]["sha256"] + "  " + name + "\n", "ascii")
+        checksum_paths.append(str(checksum_path))
     verify(output, root)
-    return {"version": version, "archive": str(archive), "manifest": str(manifest_path), "checksum": str(checksum_path)}
+    return {"version": version, "archive": str(archive), "universal_archive": str(universal_archive),
+            "manifest": str(manifest_path), "checksum": checksum_paths[0], "checksums": checksum_paths}
 
 
 def verify(output_dir, root=ROOT):
     output = Path(output_dir).resolve()
     manifest = json.loads((output / "update-manifest.json").read_text(encoding="utf-8"))
     version = read_version(root)
-    expected_name = "CylinderResample_Maya2024_v" + version + ".zip"
+    expected_name, universal_name = archive_names(version)
     if manifest.get("schema_version") != 1 or manifest.get("version") != version:
         raise ValueError("Manifest schema/version mismatch")
-    if (manifest.get("maya_min"), manifest.get("maya_max")) != (2024, 2024):
+    if (manifest.get("maya_min"), manifest.get("maya_max")) != (2022, 2027):
         raise ValueError("Manifest Maya compatibility mismatch")
     archive_info = manifest["archive"]
     if archive_info["name"] != expected_name:
@@ -142,6 +164,8 @@ def verify(output_dir, root=ROOT):
     archive_data = archive.read_bytes()
     if len(archive_data) != archive_info["size"] or digest(archive_data) != archive_info["sha256"]:
         raise ValueError("Archive size/SHA-256 mismatch")
+    if (output / universal_name).read_bytes() != archive_data:
+        raise ValueError("Universal and historic archive contents differ")
     expected = release_files(root)
     expected_package = {name: digest(data) for name, data in expected.items() if name.startswith(PACKAGE_PREFIX)}
     if manifest["files"] != expected_package:
@@ -155,9 +179,10 @@ def verify(output_dir, root=ROOT):
         for name, data in expected.items():
             if package.read(PREFIX + name) != data:
                 raise ValueError("Archive source mismatch: " + name)
-    checksum = (output / (expected_name + ".sha256")).read_text(encoding="ascii")
-    if checksum != archive_info["sha256"] + "  " + expected_name + "\n":
-        raise ValueError("Checksum file mismatch")
+    for name in (expected_name, universal_name):
+        checksum = (output / (name + ".sha256")).read_text(encoding="ascii")
+        if checksum != archive_info["sha256"] + "  " + name + "\n":
+            raise ValueError("Checksum file mismatch: " + name)
     return {"version": version, "verified": True, "files": len(expected)}
 
 

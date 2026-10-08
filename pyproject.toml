@@ -1,13 +1,13 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "maya-cylinder-resample"
 dynamic = ["version"]
-description = "Resegment modeled cylindrical meshes in Maya 2024 while retaining UV layout"
+description = "Resegment modeled cylindrical meshes in Maya 2022-2027 while retaining UV layout"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.7"
 dependencies = []
 keywords = ["maya", "cylinder", "mesh", "uv", "resampling"]
 

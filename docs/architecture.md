@@ -5,6 +5,7 @@
 | 模块 | 职责 |
 | --- | --- |
 | `core.py` | 不依赖 Maya 的拓扑分析、约束、采样、几何和面角 UV 生成 |
+| `compat.py` | 最低 Python 版本、Maya 2022 至 2027 范围及运行环境检查 |
 | `adapter.py` | Maya 场景快照、活对象解析、结果创建、材质与软硬边适配 |
 | `mesh_command.py` | 可撤销的网格创建命令；按版本/内容隔离，保留旧命令支持 Undo |
 | `ui.py` | 原生 Maya 控件、预览会话、用户确认、更新协调与模块重载 |
@@ -18,7 +19,7 @@
 ## 更新流程
 
 1. 用户检查更新，读取固定仓库最新正式 Release。
-2. 验证标签、版本、受支持 Maya 版本及更新清单。
+2. 验证标签、插件版本和更新清单；按当前运行的 Maya 主版本匹配清单支持范围，不使用固定 2024 常量。
 3. 用户确认后下载归档，验证大小、SHA-256 和文件摘要。
 4. 在目标脚本目录附近暂存完整包，拒绝越界路径、非法文件和符号链接。
 5. 备份旧安装，切换完整新安装；失败时回滚。
@@ -28,16 +29,18 @@
 
 ## 发布清单
 
-发布附件包括安装 ZIP、`update-manifest.json` 和 ZIP 的 `.sha256`。ZIP 顶层固定为 `CylinderResample/`，Maya 安装包中的 Python 包路径为 `scripts/cylinder_resample/`，源码仓库仍采用 `src/cylinder_resample/`。
+发布附件包括两个内容完全相同的安装 ZIP、`update-manifest.json` 和两个 ZIP 各自的 `.sha256`。用户下载推荐 `CylinderResample_Maya2022-2027_v<版本>.zip`。清单继续引用 `CylinderResample_Maya2024_v<版本>.zip`，使 0.3.x 的严格文件名检查能够识别升级包；这不是单独的 2024 构建。验证器必须比较两个 ZIP 的全部字节一致，且发布流程使用精确文件名而非混入旧包的通配符。
+
+ZIP 顶层固定为 `CylinderResample/`，Maya 安装包中的 Python 包路径为 `scripts/cylinder_resample/`，源码仓库仍采用 `src/cylinder_resample/`。
 
 ```json
 {
   "schema_version": 1,
-  "version": "0.3.0",
-  "maya_min": 2024,
-  "maya_max": 2024,
+  "version": "0.4.0",
+  "maya_min": 2022,
+  "maya_max": 2027,
   "archive": {
-    "name": "CylinderResample_Maya2024_v0.3.0.zip",
+    "name": "CylinderResample_Maya2024_v0.4.0.zip",
     "size": 12345,
     "sha256": "64 位十六进制摘要"
   },
@@ -57,4 +60,4 @@
 - Maya 内自检：原生 API 创建和写入临时网格；需要正常 Maya 环境。
 - 人工端到端：实际窗口、Undo/Redo、连续升级和失败恢复；目前未完成实机验证。
 
-CI 只运行前三层及发布包静态验证，不能把它的绿色状态理解成 Maya 实机通过。
+CI 在 Windows/Ubuntu 上使用 CPython 3.7、3.9、3.10、3.11、3.13 真实解释器运行前三层及发布包验证，不能把它的绿色状态理解成六版 Maya 原生实机通过。界面使用 `maya.cmds`，不直接依赖 PySide2/PySide6，避免把不同 Maya 内置 Qt 版本混用。

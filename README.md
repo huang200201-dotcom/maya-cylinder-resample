@@ -1,25 +1,39 @@
 # Maya 圆柱重分段
 
-适用于 Windows / Maya 2024 的 Python 工具。对已删除创建历史、已经加工过的圆柱和管体重新设置圆周段数，并尽量保留 UV 布局、材质分区和边的软硬状态。
+面向 Windows / Maya 2022 至 2027 的 Python 3 工具。对已删除创建历史、已经加工过的圆柱和管体重新设置圆周段数，并尽量保留 UV 布局、材质分区和边的软硬状态。
 
-当前版本：**0.3.2**。运行时不需要额外安装 Python 库。该版本为试用版，实际 Maya 场景、界面及撤销流程仍需实机验证。
+当前版本：**0.4.0**。运行时不需要额外安装 Python 库。已适配 Python 3.7 至 3.13；Maya 2022 必须使用 Python 3 模式，不支持 Python 2。该版本仍为试用版，六个 Maya 版本的原生场景、界面、撤销和热更新尚未逐版完成实机验证。
 
 ## 安装与使用
 
-1. 从 [最新正式发布](https://github.com/huang200201-dotcom/maya-cylinder-resample/releases/latest) 下载 `CylinderResample_Maya2024_v*.zip` 并完整解压。
+1. 从 [最新正式发布](https://github.com/huang200201-dotcom/maya-cylinder-resample/releases/latest) 下载 `CylinderResample_Maya2022-2027_v*.zip` 并完整解压。
 2. 将解压目录中的 `install.py` 拖入 Maya 三维视图。
 3. 点击 `CylinderTools` 工具架的 `CR` 按钮，在边模式选择完整圆周边环，然后分析并生成预览。
 4. 确认后保留结果副本，或取消预览。原模型的几何与 UV 不会被覆盖。
 
-不建议直接下载源码 ZIP 安装。源码采用 `src/` 布局；可先在仓库根目录运行 `python tools/build_release.py` 生成可拖拽安装的发布包。
+不建议直接下载源码 ZIP 安装。源码采用 `src/` 布局；可先在仓库根目录运行 `python tools/build_release.py` 生成可拖拽安装的发布包。发布附件同时保留 `CylinderResample_Maya2024_v*.zip`，与通用名称的 ZIP 字节完全一致，仅用于兼容旧版热更新器，文件名不表示仅支持 2024。
+
+## Maya 版本
+
+| Maya | 自带 Python 主次版本 | 本插件要求 |
+| --- | --- | --- |
+| 2022 | 3.7 | Python 3 模式，不能使用 Python 2 |
+| 2023 | 3.9 | Python 3 |
+| 2024 | 3.10 | Python 3 |
+| 2025、2026 | 3.11 | Python 3 |
+| 2027 | 3.13 | Python 3 |
+
+版本依据 Autodesk 的 [2022 组件说明](https://help.autodesk.com/cloudhelp/2022/ENU/Maya-SDK/Open-Source-Components/2022-Open-Source-Components.html)、[2023 Python 更新](https://help.autodesk.com/cloudhelp/2023/ENU/Maya-WhatsNewPR/files/GUID-DF43840B-4DB1-43F8-BFD1-97D8D031B91D.htm)、[2024 组件说明](https://help.autodesk.com/cloudhelp/2024/ENU/Maya-SDK/files/Open-Source-Components/Maya_SDK_Open_Source_Components_2024_Open_Source_Components_html.html)、[2025 组件说明](https://help.autodesk.com/cloudhelp/2025/ENU/Maya-DEVHELP/files/Maya_DEVHELP_Open_Source_Components_html.html)、[2026 组件说明](https://help.autodesk.com/cloudhelp/2026/ENU/Maya-DEVHELP/files/Maya_DEVHELP_Open_Source_Components_html.html) 和 [2027 API 更新](https://blog.autodesk.io/maya-2027-api-update-guide/)。补丁版可能随 Maya 更新而变化。此表为适配目标，不是原生 Maya 实机验收记录。
 
 ## 从 GitHub 热更新
 
 在插件窗口点击“检查 GitHub 更新”。发现新正式版本后，确认安装，再下载并验证发布包，备份旧文件并切换到新版。更新完成后重新分析模型；不需要重启 Maya。更新前应先保留或取消预览，正在运行的操作不能跨版本继续。
 
-从 0.1 / 0.2 升级到 0.3，需要先下载本次发布包并拖入 `install.py` 一次；旧版本没有更新器。之后即可在窗口内检查并确认后续更新。
+从 0.1 / 0.2 升级到当前版，需要先下载本次发布包并拖入 `install.py` 一次；旧版本没有更新器。之后即可在窗口内检查并确认后续更新。
 
-0.3.1 用户遇到 `name '__file__' is not defined` 或创建网格命令不存在时，可在窗口内检查更新至 0.3.2；也可下载新版发布包并拖入 `install.py` 重新安装。
+0.3.x 的 Maya 2024 用户可直接检查更新至 0.4.0。其他 Maya 版本建议先下载通用发布包并拖入 `install.py` 一次；尤其 Maya 2022 的旧更新器不兼容 Python 3.7，须手动完成首次升级。安装后的更新检查会按正在运行的 Maya 版本验证清单范围。
+
+0.3.1 用户遇到 `name '__file__' is not defined` 或创建网格命令不存在时，可在窗口内检查更新至当前版；也可下载新版发布包并拖入 `install.py` 重新安装。
 
 更新来源固定为本仓库的 **正式 GitHub Releases**，不直接执行 `main` 分支中的开发代码，不自动更新，也不下载草稿或预发布版本。公开仓库不需要 GitHub 令牌。网络错误、损坏的包或安装失败不会被当成更新成功。
 
@@ -54,7 +68,7 @@ python tools/build_release.py --output-dir dist
 python tools/build_release.py --verify-only --output-dir dist
 ```
 
-测试覆盖纯几何计算、模拟界面会话与更新下载/校验/安装逻辑。GitHub Actions 在 Windows 和 Ubuntu 的 Python 3.10、3.11、3.12 上运行这些测试，但不包含 Maya 原生场景 API。
+测试覆盖纯几何计算、模拟界面会话与更新下载/校验/安装逻辑。GitHub Actions 在 Windows 2022 和 Ubuntu 22.04 的 Python 3.7、3.9、3.10、3.11、3.13 上运行真实解释器测试及发布包验证，但不包含 Maya 原生场景 API。Ubuntu 测试通过不表示插件已完成 Linux Maya 适配。
 
 本机 Maya 后台程序导入 Autodesk DLL 时出现 `WinError 1114` 初始化错误，因此实际 Maya 界面、撤销/重做及热更新的完整端到端验证尚未完成。发布包提供 `check_in_maya.py`，可拖入正常打开的 Maya 进行临时模型兼容自检；该自检不替代完整界面测试。
 

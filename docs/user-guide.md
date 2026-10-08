@@ -1,10 +1,12 @@
 # 使用说明
 
-适用版本：Windows / Maya 2024，插件 0.3.2。
+适配目标：Windows / Maya 2022 至 2027，插件 0.4.0。仅支持 Python 3，最低 Python 3.7；六版 Maya 尚未逐版完成原生实机验收。
 
 ## 安装
 
-从仓库 [Releases](https://github.com/huang200201-dotcom/maya-cylinder-resample/releases/latest) 下载发布 ZIP，完整解压后将 `install.py` 拖入 Maya 三维视图。文件会复制到当前 Maya 用户脚本目录，工具会打开，并在 `CylinderTools` 工具架添加 `CR` 按钮。无需安装其他 Python 库。
+从仓库 [Releases](https://github.com/huang200201-dotcom/maya-cylinder-resample/releases/latest) 下载 `CylinderResample_Maya2022-2027_v0.4.0.zip`，完整解压后将 `install.py` 拖入 Maya 三维视图。文件会复制到当前 Maya 版本的用户脚本目录，工具会打开，并在 `CylinderTools` 工具架添加 `CR` 按钮。无需安装其他 Python 库。使用多个 Maya 版本时，需分别在各版本中安装一次。
+
+Maya 2022 默认使用 Python 3。若曾将启动参数设置为 `-pythonver 2`，或将 `MAYA_PYTHON_VERSION` 设置为 `2`，先恢复默认 Python 3 模式并重启 Maya，再安装插件。不支持 Python 2 模式，不能通过安装额外库绕过这一要求。参见 [Autodesk Python 模式说明](https://help.autodesk.com/cloudhelp/2022/ENU/Maya-Scripting/files/GUID-C0F27A50-3DD6-454C-A4D1-9E3C44B3C990.htm)。
 
 从旧版升级前先保留或取消预览。拖入新版安装入口即可升级；不会强制卸载仍参与撤销历史的旧网格创建命令。安装后可将 `check_in_maya.py` 拖入 Maya 运行兼容自检，它只创建/删除临时对象并恢复选择。
 
@@ -46,9 +48,11 @@ UV 从原面角插值，固定接缝列，并保留岛的布局坐标，不重�
 
 点击“检查 GitHub 更新”，确认正式新版本后安装。更新前保留或取消预览。更新来自固定公开仓库的 GitHub Releases，不需要登录，不直接读取开发分支代码。下载与安装完成后会重新打开工具，需要重新分析模型。
 
+0.3.x 在 Maya 2024 中可以直接热更新到 0.4.0。其他 Maya 版本建议先手动安装 0.4.0 通用包一次，尤其 Maya 2022 的旧更新器不兼容 Python 3.7；后续更新会自动读取当前 Maya 主版本，与发布清单范围核对。发布附件中的 `Maya2024` 历史名称与 `Maya2022-2027` 通用名称内容完全相同，前者用于兼容旧更新器。
+
 下载会检查大小、SHA-256 和文件清单；旧代码先备份，切换失败会尝试回滚。网络中断或 GitHub 限流时保留当前版本，稍后重试，也可从 Releases 下载 ZIP 手动拖入安装。
 
-0.3.1 若出现 `name '__file__' is not defined`，并提示 `maya.cmds` 缺少 `crCreateMesh_...` 命令，请检查更新至 0.3.2。无法在窗口内更新时，下载新版发布包，完整解压后拖入 `install.py` 重新安装。无需手动修改或删除命令缓存。
+0.3.1 若出现 `name '__file__' is not defined`，并提示 `maya.cmds` 缺少 `crCreateMesh_...` 命令，请检查更新至当前版。无法在窗口内更新时，下载新版发布包，完整解压后拖入 `install.py` 重新安装。无需手动修改或删除命令缓存。
 
 更新不会修改已经保留的普通网格，不主动清空撤销历史。旧网格创建命令保留在版本化缓存中，以免 Undo 引用失效。不要在 Maya 运行时手动删这些文件。
 
@@ -58,7 +62,7 @@ UV 从原面角插值，固定接缝列，并保留岛的布局坐标，不重�
 - `comparison_24_16_36.obj`：24、16、36 段并排对比。
 - `spacing_modes_24_36.obj`：原 24 段、原轮廓 36 段、均匀 36 段、圆形 36 段；可用线框和 UV 编辑器检查。
 
-纯计算及模拟测试不替代 Maya 实机测试。当前机器导入 Autodesk DLL 时发生 `WinError 1114`，实际场景、界面、撤销与热更新端到端流程尚未完成实机验证。请先使用副本场景和示例模型测试。
+纯计算及模拟测试不替代 Maya 实机测试。当前机器导入 Autodesk DLL 时发生 `WinError 1114`，Maya 2022 至 2027 的实际场景、界面、撤销与热更新端到端流程尚未逐版完成实机验证。请先使用副本场景和示例模型测试。`check_in_maya.py` 会检查当前运行环境，并报告当前 Maya 版本及临时网格检查结果；报告成功仍不代替完整界面和连续更新测试。
 
 ## 卸载
 

@@ -26,6 +26,7 @@ def package_fixture(parent, version, load_failure=False, invalid_syntax=False):
         "class Session:\n    preview_records = []\n_SESSION = Session()\n", encoding="utf-8")
     for name in ("core.py", "adapter.py", "mesh_command.py", "updater.py", "update_ui.py"):
         (package / name).write_text("VALUE = 1\n", encoding="utf-8")
+    (package / "compat.py").write_bytes((ROOT / "src" / "cylinder_resample" / "compat.py").read_bytes())
     if invalid_syntax:
         (package / "core.py").write_text("def broken(:\n", encoding="utf-8")
     (package / "config.json").write_text('{"repository":"fixture/repo"}', encoding="utf-8")
@@ -51,6 +52,7 @@ def installer_environment(directory, source_options=None):
     old_ui._SESSION = types.SimpleNamespace(preview_records=[{"fixture": "original undo handle"}])
     old_package.ui = old_ui
     commands = types.ModuleType("maya.cmds")
+    commands.about = lambda **kwargs: "2024"
     commands.internalVar = lambda **kwargs: str(scripts)
     commands.window = lambda *args, **kwargs: False
     commands.deleteUI = lambda *args, **kwargs: None
@@ -73,6 +75,29 @@ def installer_environment(directory, source_options=None):
 
 
 class DragInstallerTests(unittest.TestCase):
+    def test_supported_maya_versions_install_into_their_own_script_directory(self):
+        for year in range(2022, 2028):
+            with self.subTest(year=year), tempfile.TemporaryDirectory() as directory, \
+                    installer_environment(directory) as values:
+                installer, source, target, old_package, old_ui = values
+                with patch.object(sys.modules["maya.cmds"], "about", return_value=str(year)):
+                    installer.install()
+                self.assertEqual(tree_bytes(target), tree_bytes(source))
+
+    def test_unsupported_runtime_does_not_touch_original_install_or_window(self):
+        with tempfile.TemporaryDirectory() as directory, installer_environment(directory) as values:
+            installer, source, target, old_package, old_ui = values
+            original = tree_bytes(target)
+            commands = sys.modules["maya.cmds"]
+            with patch.object(commands, "about", return_value="2028"), \
+                    patch.object(commands, "deleteUI") as delete_ui:
+                with self.assertRaisesRegex(RuntimeError, "2022.*2027"):
+                    installer.install()
+            delete_ui.assert_not_called()
+            self.assertEqual(tree_bytes(target), original)
+            self.assertIs(sys.modules["cylinder_resample"], old_package)
+            self.assertEqual([path.name for path in target.parent.iterdir()], ["cylinder_resample"])
+
     def test_manual_upgrade_accepts_safe_windows_short_name_alias(self):
         with tempfile.TemporaryDirectory() as directory, installer_environment(directory) as values:
             installer, source, target, old_package, old_ui = values

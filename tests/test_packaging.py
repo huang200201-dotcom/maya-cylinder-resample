@@ -28,14 +28,21 @@ class ReleasePackagingTests(unittest.TestCase):
             first = self.build(output)
             self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
             archive_path = output / ("CylinderResample_Maya2024_v%s.zip" % __version__)
+            universal_path = output / ("CylinderResample_Maya2022-2027_v%s.zip" % __version__)
             manifest_path = output / "update-manifest.json"
             archive_bytes = archive_path.read_bytes()
             manifest_bytes = manifest_path.read_bytes()
             manifest = json.loads(manifest_bytes)
             self.assertEqual(manifest["version"], __version__)
+            self.assertEqual((manifest["maya_min"], manifest["maya_max"]), (2022, 2027))
             self.assertEqual(manifest["archive"]["name"], archive_path.name)
             self.assertEqual(manifest["archive"]["size"], len(archive_bytes))
             self.assertEqual(manifest["archive"]["sha256"], hashlib.sha256(archive_bytes).hexdigest())
+            self.assertEqual(universal_path.read_bytes(), archive_bytes)
+            for package_path in (archive_path, universal_path):
+                self.assertEqual(
+                    package_path.with_name(package_path.name + ".sha256").read_bytes(),
+                    (manifest["archive"]["sha256"] + "  " + package_path.name + "\n").encode("ascii"))
             updater._validate_manifest(manifest, __version__, manifest["archive"])
             installed_files = updater._validated_package(archive_bytes, manifest)
             expected = {path.relative_to(ROOT / "src" / "cylinder_resample").as_posix(): path.read_bytes().replace(b"\r\n", b"\n")
@@ -48,10 +55,23 @@ class ReleasePackagingTests(unittest.TestCase):
                 self.assertFalse(any("__pycache__" in name or name.endswith(".pyc") for name in archive.namelist()))
                 self.assertIn("CylinderResample/install.py", archive.namelist())
                 self.assertIn("CylinderResample/README.md", archive.namelist())
+                self.assertIn("CylinderResample/scripts/cylinder_resample/compat.py", archive.namelist())
             second = self.build(output)
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
             self.assertEqual(archive_path.read_bytes(), archive_bytes)
+            self.assertEqual(universal_path.read_bytes(), archive_bytes)
             self.assertEqual(manifest_path.read_bytes(), manifest_bytes)
+
+    def test_verification_rejects_modified_universal_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            built = self.build(output)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            universal_path = output / ("CylinderResample_Maya2022-2027_v%s.zip" % __version__)
+            universal_path.write_bytes(universal_path.read_bytes() + b"modified")
+            verified = self.build(output, "--verify-only")
+            self.assertNotEqual(verified.returncode, 0)
+            self.assertIn("archive contents differ", verified.stderr)
 
     def test_mismatched_release_tag_is_rejected_without_creating_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
