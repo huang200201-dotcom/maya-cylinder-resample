@@ -6,7 +6,7 @@ import math
 import os
 import re
 import tempfile
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from contextlib import contextmanager
 
 import maya.api.OpenMaya as om
@@ -17,6 +17,13 @@ from . import core
 
 class ToolError(ValueError):
     pass
+
+
+ConstraintBand = namedtuple("ConstraintBand", "rings uv_by_set material_columns hard_columns")
+ConstraintAnalysis = namedtuple(
+    "ConstraintAnalysis",
+    "snapshot analysis fingerprint uv_analyzed uv_by_set uv_columns material_columns "
+    "hard_columns ignored_cap_hard_edges per_band")
 
 
 @contextmanager
@@ -123,8 +130,39 @@ def analyze(snapshot):
     return core.analyze_mesh(snapshot["points"], snapshot["faces"], snapshot["seed_edges"])
 
 
-def _protected_columns(snapshot, analysis, preserve_hard_edges):
-    columns = set()
+def _planar_fan(snapshot, cap):
+    points = snapshot["points"]
+    center = points[cap["center"]]
+    vertices = {vertex for face in cap["faces"] for vertex in snapshot["faces"][face]}
+    scale = max(core._distance(points[vertex], center) for vertex in vertices)
+    if not math.isfinite(scale) or scale == 0.0:
+        return False
+    normal = None
+    for face_id in cap["faces"]:
+        face = snapshot["faces"][face_id]
+        first, second, third = [tuple(value / scale for value in core._sub(points[vertex], center))
+                                for vertex in face]
+        cross = core._cross(core._sub(second, first), core._sub(third, first))
+        length = core._norm(cross)
+        if not math.isfinite(length) or length <= 1.0e-14:
+            return False
+        direction = tuple(value / length for value in cross)
+        if normal is None:
+            normal = direction
+        elif core._dot(normal, direction) < 1.0 - 1.0e-12:
+            return False
+    return True
+
+
+def _redundant_cap_hard_edges(snapshot, analysis, cap):
+    ring = analysis["rings"][cap["ring"]]
+    return all(not snapshot["smoothing"].get(tuple(sorted((vertex, cap["center"]))), True)
+               for vertex in ring) and _planar_fan(snapshot, cap)
+
+
+def _column_constraints(snapshot, analysis, preserve_hard_edges):
+    material, hard = set(), set()
+    ignored_cap_edges = 0
     rings = analysis["rings"]
     size = analysis["source_count"]
     assignments = snapshot["assignments"]
@@ -133,31 +171,105 @@ def _protected_columns(snapshot, analysis, preserve_hard_edges):
         first, second = (rings[index] for index in band["rings"])
         for column in range(size):
             if assignments[face_ids[column]] != assignments[face_ids[(column - 1) % size]]:
-                columns.add(column)
+                material.add(column)
             edge = tuple(sorted((first[column], second[column])))
             if preserve_hard_edges and not snapshot["smoothing"].get(edge, True):
-                columns.add(column)
+                hard.add(column)
     if preserve_hard_edges:
         for cap in analysis["caps"]:
             if cap["kind"] == "fan":
+                # Uniform hard flags between coplanar cap triangles do not define creases.
+                if _redundant_cap_hard_edges(snapshot, analysis, cap):
+                    ignored_cap_edges += size
+                    continue
                 for column, vertex in enumerate(rings[cap["ring"]]):
                     edge = tuple(sorted((vertex, cap["center"])))
                     if not snapshot["smoothing"].get(edge, True):
-                        columns.add(column)
+                        hard.add(column)
     for cap in analysis["caps"]:
         if cap["kind"] == "fan":
             for column, face in enumerate(cap["faces"]):
                 if assignments[face] != assignments[cap["faces"][(column - 1) % size]]:
-                    columns.add(column)
-    return sorted(columns)
+                    material.add(column)
+    return material, hard, ignored_cap_edges
 
 
-def constraint_summary(snapshot, analysis, preserve_uvs=True, preserve_hard_edges=True):
-    uv_columns = set()
-    if preserve_uvs:
-        uv_columns = core._uv_constraints(analysis, core._parse_uvs(snapshot["uv_sets"], snapshot["faces"])) - {0}
-    protected = set(_protected_columns(snapshot, analysis, preserve_hard_edges)) | uv_columns | {0}
-    return {"protected_count": len(protected), "minimum_count": max(3, len(protected))}
+def _protected_columns(snapshot, analysis, preserve_hard_edges):
+    material, hard, _ = _column_constraints(snapshot, analysis, preserve_hard_edges)
+    return sorted(material | hard)
+
+
+def _uv_columns_by_set(analysis, uv_data):
+    return tuple((name, frozenset(core._uv_constraints(analysis, {name: data})))
+                 for name, data in sorted(uv_data.items()))
+
+
+def analyze_constraints(snapshot, analysis, include_uvs=True):
+    """Freeze boundary columns, not the mutable UV data used during rebuilding."""
+    uv_data = core._parse_uvs(snapshot["uv_sets"], snapshot["faces"]) if include_uvs else {}
+    uv_by_set = _uv_columns_by_set(analysis, uv_data)
+    uv_columns = frozenset(column for _, columns in uv_by_set for column in columns)
+    material, hard, ignored = _column_constraints(snapshot, analysis, True)
+    per_band = []
+    for band in analysis["bands"]:
+        single_band = {"rings": analysis["rings"], "source_count": analysis["source_count"],
+                       "bands": (band,), "caps": ()}
+        band_material, band_hard, _ = _column_constraints(snapshot, single_band, True)
+        per_band.append(ConstraintBand(tuple(band["rings"]),
+                                       _uv_columns_by_set(single_band, uv_data),
+                                       frozenset(band_material), frozenset(band_hard)))
+    # Owner references are only for identity checks; all computed data is immutable.
+    return ConstraintAnalysis(snapshot, analysis, snapshot.get("fingerprint"), bool(include_uvs),
+                              uv_by_set, uv_columns, frozenset(material), frozenset(hard),
+                              ignored, tuple(per_band))
+
+
+def constraint_summary(snapshot, analysis, preserve_uvs=True, preserve_hard_edges=True,
+                       constraints=None):
+    if constraints is not None:
+        if (not isinstance(constraints, ConstraintAnalysis) or constraints.snapshot is not snapshot
+                or constraints.analysis is not analysis
+                or constraints.fingerprint != snapshot.get("fingerprint")):
+            raise ToolError("约束分析缓存与当前模型不一致，请重新分析圆周边环。")
+    if constraints is None or (preserve_uvs and not constraints.uv_analyzed):
+        constraints = analyze_constraints(snapshot, analysis, include_uvs=preserve_uvs)
+    uv_columns = constraints.uv_columns if preserve_uvs else frozenset()
+    uv_by_set = constraints.uv_by_set if preserve_uvs else ()
+    material = constraints.material_columns
+    hard = constraints.hard_columns if preserve_hard_edges else frozenset()
+    protected = material | hard | uv_columns
+    return {"protected_count": len(protected), "minimum_count": max(3, len(protected)),
+            "uv_count": len(uv_columns), "material_count": len(material), "hard_count": len(hard),
+            "minimum_without_hard": max(3, len(material | uv_columns)),
+            "ignored_cap_hard_edges": constraints.ignored_cap_hard_edges if preserve_hard_edges else 0,
+            "uv_enabled": bool(preserve_uvs), "uv_by_set": uv_by_set,
+            "uv_set_counts": tuple((name, len(columns)) for name, columns in uv_by_set)}
+
+
+def _constraint_message(snapshot, analysis, target_count, preserve_uvs, preserve_hard_edges):
+    summary = constraint_summary(snapshot, analysis, preserve_uvs, preserve_hard_edges)
+    message = ("目标 {} 段低于当前保护所需的 {} 段。\n"
+               "UV 接缝：{} 列；材质边界：{} 列；硬边：{} 列（可重叠）。").format(
+        target_count, summary["minimum_count"], summary["uv_count"],
+        summary["material_count"], summary["hard_count"])
+    if not preserve_uvs:
+        message += "\nUV 保护已关闭；当前限制来自材质边界或硬边。"
+    elif summary["uv_count"]:
+        counts = sorted(summary["uv_set_counts"], key=lambda item: (-item[1], item[0]))
+        blocking = [(name, count) for name, count in counts if count > target_count]
+        if blocking:
+            message += "\n主要限制 UV 集：" + "、".join("{}（{} 列）".format(name, count)
+                                                       for name, count in blocking) + "。"
+        elif summary["uv_count"] > target_count:
+            message += "\n多个 UV 集的保护列合并后超过目标段数：" + "、".join(
+                "{}（{} 列）".format(name, count) for name, count in counts) + "。"
+    if summary["hard_count"] and target_count >= summary["minimum_without_hard"]:
+        message += "\n可以取消“保留硬边”后重试{}；结果将重新计算软硬法线。".format(
+            "，仍可保留 UV" if preserve_uvs else "")
+    else:
+        message += "\n{}不能直接跨越；请提高段数，或先在模型副本上整理这些边界。".format(
+            "真实 UV 分岛或材质边界" if preserve_uvs else "材质边界")
+    return message
 
 
 def _component_ranges(node, face_ids):
@@ -210,13 +322,14 @@ def _edge_smoothing(snapshot, result, preserve_hard_edges):
             continue
         ring_index = cap["ring"]
         center = mapping[cap["center"]]
+        uniform_hard = _redundant_cap_hard_edges(snapshot, result["analysis"], cap)
         for column, sample in enumerate(samples):
             edge = tuple(sorted((center, new_rings[ring_index][column])))
             if abs(sample - round(sample)) < 1e-8:
                 old = tuple(sorted((cap["center"], source_rings[ring_index][int(round(sample)) % size])))
                 smooth[edge] = source_smoothing.get(old, True)
             else:
-                smooth[edge] = True
+                smooth[edge] = not uniform_hard
     return smooth
 
 
@@ -267,10 +380,14 @@ def build_result(snapshot, target_count, shape_mode="contour", preserve_uvs=True
         raise ToolError("模型在分析后发生了变化，请重新分析圆周边环。")
     analysis = analyze(current)
     protected = _protected_columns(current, analysis, preserve_hard_edges)
-    result = core.resample_mesh(current["points"], current["faces"], current["seed_edges"],
-                                target_count, uv_sets=current["uv_sets"], shape_mode=shape_mode,
-                                preserve_uvs=preserve_uvs, protected_columns=protected,
-                                metric_points=current["metric_points"], _analysis=analysis)
+    try:
+        result = core.resample_mesh(current["points"], current["faces"], current["seed_edges"],
+                                    target_count, uv_sets=current["uv_sets"], shape_mode=shape_mode,
+                                    preserve_uvs=preserve_uvs, protected_columns=protected,
+                                    metric_points=current["metric_points"], _analysis=analysis)
+    except core.ConstraintError as error:
+        raise ToolError(_constraint_message(current, analysis, target_count, preserve_uvs,
+                                            preserve_hard_edges)) from error
     leaf = current["transform"].split("|")[-1].replace(":", "_")
     create_command = _ensure_mesh_command()
     smoothing = _edge_smoothing(current, result, preserve_hard_edges)

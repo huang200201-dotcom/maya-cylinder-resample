@@ -8,6 +8,12 @@ class ResampleError(ValueError):
     pass
 
 
+class ConstraintError(ResampleError):
+    def __init__(self, minimum_count):
+        self.minimum_count = minimum_count
+        super().__init__("保留现有 UV 接缝和受保护边至少需要 %d 段，请提高目标段数。" % minimum_count)
+
+
 _EPS = 1.0e-9
 
 
@@ -264,8 +270,13 @@ def _uv_constraints(analysis, uv_data):
                 right = corners[cap["faces"][i]]
                 if (left is None) != (right is None):
                     protected.add(i)
-                elif left is not None and (left[ring[i]] != right[ring[i]] or left[cap["center"]] != right[cap["center"]]):
-                    protected.add(i)
+                elif left is not None:
+                    left_center, right_center = left[cap["center"]], right[cap["center"]]
+                    # Coincident fan-center UV indices need not pin the radial edge.
+                    if (left[ring[i]] != right[ring[i]] or
+                            data["u"][left_center] != data["u"][right_center] or
+                            data["v"][left_center] != data["v"][right_center]):
+                        protected.add(i)
     return protected
 
 
@@ -296,9 +307,9 @@ def _allocations(weights, target):
 
 def _samples(n, target, protected, lengths=None, keep_identity=True):
     """Return source edge parameters using lengths as the sampling measure."""
-    pins = sorted(set(protected) | {0})
+    pins = sorted(set(protected)) or [0]
     if target < len(pins):
-        raise ResampleError("保留现有 UV 接缝和受保护边至少需要 %d 段，请提高目标段数。" % len(pins))
+        raise ConstraintError(len(pins))
     if any(not isinstance(pin, int) or not 0 <= pin < n for pin in pins):
         raise ResampleError("受保护边的列编号必须对应原始圆周环。")
     measures = list(lengths) if lengths is not None else [1.0] * n
@@ -315,7 +326,10 @@ def _samples(n, target, protected, lengths=None, keep_identity=True):
     cumulative = [0.0]
     for value in measures:
         cumulative.append(cumulative[-1] + value)
-    ends = pins[1:] + [n]
+    # Repeat the measure for the interval that crosses source column zero.
+    period = cumulative[-1]
+    cumulative += [period + value for value in cumulative[1:]]
+    ends = pins[1:] + [pins[0] + n]
     intervals = [cumulative[end] - cumulative[pin] for pin, end in zip(pins, ends)]
     allocations = _allocations(intervals, target)
     result = []
@@ -323,12 +337,13 @@ def _samples(n, target, protected, lengths=None, keep_identity=True):
         result.append(float(pin))
         for j in range(1, count):
             position = cumulative[pin] + interval * j / count
-            column = min(n - 1, bisect_right(cumulative, position) - 1)
-            fraction = (position - cumulative[column]) / measures[column]
+            column = min(2 * n - 1, bisect_right(cumulative, position) - 1)
+            fraction = (position - cumulative[column]) / measures[column % n]
             value = column + fraction
             nearest = round(value)
-            result.append(float(nearest) if abs(value - nearest) <= _EPS else value)
-    return result
+            value = float(nearest) if abs(value - nearest) <= _EPS else value
+            result.append(value % n)
+    return sorted(result)
 
 
 def _sub(a, b):
@@ -487,7 +502,7 @@ def resample_mesh(points, faces, seed_edges, target_count, uv_sets=None,
         if not isinstance(column, int) or not 0 <= column < n:
             raise ResampleError("受保护边的列编号必须对应原始圆周环。")
         constraints.add(column)
-    protected = constraints | {0}
+    protected = set(constraints) if constraints else {0}
     if shape_mode == "contour" and target >= n:
         protected.update(range(n))
     samples = _samples(n, target, protected, lengths=lengths, keep_identity=shape_mode == "contour")
@@ -566,7 +581,7 @@ def resample_mesh(points, faces, seed_edges, target_count, uv_sets=None,
         old_a, old_b = analysis["rings"][ra], analysis["rings"][rb]
         for j, ta in enumerate(samples):
             next_j = (j + 1) % target
-            tb = samples[next_j] if next_j else float(n)
+            tb = samples[next_j] if next_j else samples[0] + float(n)
             column = int(math.floor((ta + tb) / 2.0)) % n
             fi = band["faces"][column]
             face = [new_rings[ra][j], new_rings[ra][next_j], new_rings[rb][next_j], new_rings[rb][j]]
@@ -592,7 +607,7 @@ def resample_mesh(points, faces, seed_edges, target_count, uv_sets=None,
         else:
             for j, ta in enumerate(samples):
                 next_j = (j + 1) % target
-                tb = samples[next_j] if next_j else float(n)
+                tb = samples[next_j] if next_j else samples[0] + float(n)
                 column = int(math.floor((ta + tb) / 2.0)) % n
                 fi = cap["faces"][column]
                 face = [new_ring[j], new_ring[next_j], old_to_new[cap["center"]]]

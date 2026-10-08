@@ -19,6 +19,9 @@ class Session:
     def __init__(self):
         self.snapshot = None
         self.analysis = None
+        self._constraint_analysis = None
+        self._constraint_snapshot = None
+        self._constraint_topology = None
         self.source_handle = None
         self.source_baseline = None
         # Retain deleted records: Maya undo can resurrect their objects.
@@ -123,20 +126,44 @@ class Session:
     def _summary(self):
         if not self.snapshot:
             return "等待分析"
-        _, _, keep_uv, keep_hard = self._params()
-        constraints = adapter.constraint_summary(self.snapshot, self.analysis, keep_uv, keep_hard)
+        count, _, keep_uv, keep_hard = self._params()
+        if (self._constraint_snapshot is not self.snapshot or
+                self._constraint_topology is not self.analysis or
+                self._constraint_analysis is None or
+                (keep_uv and not self._constraint_analysis.uv_analyzed)):
+            self._constraint_analysis = adapter.analyze_constraints(
+                self.snapshot, self.analysis, include_uvs=keep_uv)
+            self._constraint_snapshot, self._constraint_topology = self.snapshot, self.analysis
+        constraints = adapter.constraint_summary(self.snapshot, self.analysis, keep_uv, keep_hard,
+                                                 constraints=self._constraint_analysis)
         shape = adapter.live_shape(self.snapshot)
-        return "{}\n圆周：{} 段    截面：{} 圈    处理面数：{}\n约束列：{}    最低目标段数：{}\n{}".format(
+        details = list(self.snapshot["warnings"])
+        if keep_uv:
+            details.insert(0, "各 UV 集约束：" + ("；".join(
+                "{}：{} 列".format(name, number) for name, number in constraints.get("uv_set_counts", ()))
+                or "无"))
+        else:
+            details.insert(0, "UV 已关闭：不参与段数保护；结果不生成 UV。")
+        if constraints.get("ignored_cap_hard_edges", 0):
+            details.append("共面端盖冗余硬边：{} 条，不锁定段数。".format(constraints["ignored_cap_hard_edges"]))
+        if count < constraints["minimum_count"]:
+            details.append("当前目标低于最低段数。")
+        return "{}\n圆周：{} 段    截面：{} 圈    处理面数：{}\n约束列：{}    最低目标段数：{}\nUV 接缝：{}    材质边界：{}    硬边：{}（列，可重叠）\n{}".format(
             shape.split("|")[-2] if "|" in shape else shape,
             self.analysis["source_count"], len(self.analysis["rings"]),
             len(self.analysis["face_ids"]), constraints["protected_count"],
-            constraints["minimum_count"], "\n".join(self.snapshot["warnings"]))
+            constraints["minimum_count"], constraints.get("uv_count", 0),
+            constraints.get("material_count", 0), constraints.get("hard_count", 0),
+            "\n".join(details))
 
     def read_selection(self):
         snapshot = adapter.selected_edge_loop()
         analysis = adapter.analyze(snapshot)
+        constraints = adapter.analyze_constraints(snapshot, analysis, include_uvs=self._params()[2])
         self.cancel(silent=True)
         self.snapshot, self.analysis = snapshot, analysis
+        self._constraint_analysis = constraints
+        self._constraint_snapshot, self._constraint_topology = snapshot, analysis
         self.source_handle = snapshot.get("shape_handle") or adapter.om.MObjectHandle(adapter._dag(snapshot["shape"]).node())
         self.source_baseline = bool(cmds.getAttr(adapter.live_shape(snapshot) + ".visibility"))
         cmds.intSliderGrp(self.controls["count"], edit=True, value=analysis["source_count"])
@@ -258,6 +285,7 @@ class Session:
     def scene_changed(self):
         self.preview_records = []
         self.snapshot = self.analysis = self.source_handle = self.source_baseline = None
+        self._constraint_analysis = self._constraint_snapshot = self._constraint_topology = None
         self._preview_controls(False)
         for key in ("preview", "region", "original", "half", "double"):
             if cmds.control(self.controls.get(key, ""), exists=True):
@@ -308,7 +336,7 @@ class Session:
                                                      annotation="分段按所选边环分配，所有截面同步；UV 接缝、材质边界和硬边仍会保留。",
                                                      changeCommand=lambda *_: self.run(self.params_changed))
         self.controls["uv"] = cmds.checkBox(label="保留 UV", value=bool(self._preference("CylinderResampleUV", 1)),
-                                             annotation="插值所有 UV 集，并锁定接缝列；段数过少无法保留时会提示。",
+                                             annotation="开启时保留所有 UV 集并保护接缝；关闭时取消 UV 约束且结果无 UV，硬边和材质仍独立保护。",
                                              changeCommand=lambda *_: self.run(self.params_changed))
         self.controls["hard"] = cmds.checkBox(label="保留硬边", value=bool(self._preference("CylinderResampleHard", 1)),
                                                annotation="保留边的软硬状态；纵向硬边会占用目标段数。锁定法线会重新计算。",
