@@ -70,7 +70,7 @@ class FakeScene:
         self.nodes = []
         self.controls = {
             "count": {"value": 18}, "mode": {"select": 1},
-            "uv": {"value": True}, "hard": {"value": True},
+            "uv": {"value": True}, "uv_policy": {"select": 1}, "hard": {"value": True},
             "compare": {"value": False, "enable": False},
             "beside": {"value": False}, "preview": {}, "region": {},
             "keep": {"enable": False}, "cancel": {"enable": False}, "status": {},
@@ -248,7 +248,8 @@ def load_session_type(return_module=False):
     fake_adapter.undo_chunk = undo_chunk
     fake_adapter.analyze_constraints = lambda *args, **kwargs: types.SimpleNamespace(
         uv_analyzed=kwargs.get("include_uvs", True))
-    fake_adapter.constraint_summary = lambda *args, **kwargs: {"protected_count": 1, "minimum_count": 3}
+    fake_adapter.constraint_summary = lambda *args, **kwargs: {
+        "protected_count": 1, "minimum_count": 3, "strict_minimum_count": 3}
     maya.cmds = cmds
     module_name = "cylinder_resample._state_test_ui"
     path = ROOT / "src" / "cylinder_resample" / "ui.py"

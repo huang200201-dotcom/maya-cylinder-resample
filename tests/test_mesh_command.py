@@ -6,7 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,6 +74,17 @@ def load_plugin(**extra_globals):
 
 
 class MeshPluginLoaderTests(unittest.TestCase):
+    def test_renamed_default_uv_set_keeps_primary_slot_even_when_map1_is_secondary(self):
+        mesh = Mock()
+        slots = ["map1"]
+        mesh.getUVSetNames.side_effect = lambda: list(slots)
+        mesh.renameUVSet.side_effect = lambda old, new: slots.__setitem__(slots.index(old), new)
+        mesh.createUVSet.side_effect = slots.append
+        data = {"u": [0], "v": [0], "counts": [3], "ids": [0, 0, 0]}
+        load_plugin()["_write_uv_sets"](mesh, {"map1": data, "paint": data}, "map1", "paint")
+        self.assertEqual(slots, ["paint", "map1"])
+        mesh.setCurrentUVSetName.assert_called_once_with("map1")
+
     def test_plugin_loads_without_file_and_declares_maya_api_2(self):
         namespace = load_plugin()
         self.assertNotIn("__file__", namespace)

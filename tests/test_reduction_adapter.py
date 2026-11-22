@@ -44,7 +44,7 @@ def fan_snapshot(n=20, all_cap_hard=True):
             "assignments": [0] * len(faces), "smoothing": smoothing,
             "uv_sets": uv_sets, "fingerprint": "reduction-fixture",
             "shape": "|Source|SourceShape", "transform": "|Source",
-            "metric_points": list(points), "materials": [], "matrix": [],
+            "metric_points": list(points), "materials": [":baseSG", ":rimSG", ":capSG"], "matrix": [],
             "current_uv_set": "map1", "display_smooth_mesh": 0,
             "smooth_level": 2, "warnings": []}
 
@@ -55,7 +55,7 @@ class ReductionAdapterTests(unittest.TestCase):
         self.adapter = state.load_adapter_module()
 
     def build(self, snapshot, target, mode="contour", preserve_uvs=True,
-              preserve_hard_edges=True):
+              preserve_hard_edges=True, uv_policy="strict"):
         payloads = []
 
         def create(**kwargs):
@@ -64,6 +64,7 @@ class ReductionAdapterTests(unittest.TestCase):
 
         with ExitStack() as stack:
             stack.enter_context(patch.object(self.adapter, "snapshot_mesh", return_value=snapshot))
+            stack.enter_context(patch.object(self.adapter, "_write_materials", return_value=[]))
             stack.enter_context(patch.object(self.adapter, "_ensure_mesh_command", return_value="createFixture"))
             stack.enter_context(patch.object(self.adapter.cmds, "createFixture", create, create=True))
             for name in ("sets", "setAttr", "addAttr", "select"):
@@ -72,7 +73,7 @@ class ReductionAdapterTests(unittest.TestCase):
                                             return_value=["|Result|ResultShape"], create=True))
             stack.enter_context(patch.object(self.adapter.cmds, "ls", return_value=["|Result"], create=True))
             built = self.adapter.build_result(snapshot, target, mode, preserve_uvs,
-                                              preserve_hard_edges, _undo_chunk=False)
+                                              preserve_hard_edges, _undo_chunk=False, uv_policy=uv_policy)
         self.assertEqual(len(payloads), 1)
         return built["result"], payloads[0]
 
@@ -222,6 +223,34 @@ class ReductionAdapterTests(unittest.TestCase):
         result, _ = self.build(snapshot, 10, preserve_uvs=False)
         self.assertEqual(len(result["samples"]), 10)
         self.assertEqual(result["uv_sets"], {})
+
+    def test_adaptive_policy_builds_reduced_mesh_with_fragmented_uvs_and_materials(self):
+        snapshot = fan_snapshot()
+        snapshot["uv_sets"]["detail"] = strip_uvs(snapshot["faces"], n=20, separate_faces=True)["map1"]
+        snapshot["assignments"][:20] = [0] * 7 + [1] * 13
+        snapshot["smoothing"][(3, 23)] = False
+        result, payload = self.build(snapshot, 9, uv_policy="adaptive")
+        self.assertEqual(len(result["samples"]), 9)
+        self.assertTrue({0, 3, 7}.issubset(result["samples"]))
+        self.assertEqual(set(payload["uv_sets"]), {"map1", "detail"})
+        self.assertEqual(payload["current_uv_set"], "map1")
+        self.assertTrue(result["stats"]["uv_transfer_used"])
+        self.assertGreater(result["stats"]["uv_transfer_faces"]["detail"], 0)
+
+    def test_adaptive_policy_reports_actual_blocker_if_geometry_prevents_target(self):
+        snapshot = fan_snapshot()
+        snapshot["uv_sets"] = strip_uvs(snapshot["faces"], n=20, separate_faces=True)
+        for column in (2, 5, 9, 13, 17):
+            snapshot["smoothing"][(column, column + 20)] = False
+        analysis = self.adapter.analyze(snapshot)
+        summary = self.adapter.constraint_summary(snapshot, analysis, uv_policy="adaptive", target_count=4)
+        self.assertEqual(summary["minimum_count"], 5)
+        self.assertEqual(summary["strict_minimum_count"], 20)
+        self.assertFalse(summary["feasible"])
+        with self.assertRaises(self.adapter.ToolError) as caught:
+            self.build(snapshot, 4, uv_policy="adaptive")
+        self.assertIn("最低段数由材质边界和受保护的硬边决定", str(caught.exception))
+        self.assertIn("取消“保留硬边”", str(caught.exception))
 
     def test_side_and_cap_material_boundaries_remain_with_protection_switches_off(self):
         snapshot = fan_snapshot()
@@ -403,6 +432,7 @@ class ReductionSessionTests(unittest.TestCase):
         self.adapter = state.load_adapter_module()
 
     def test_real_reduction_constraint_error_keeps_previous_preview_and_source(self):
+        state.SCENE.controls["uv_policy"]["select"] = 2
         self.session.read_selection()
         self.session.preview()
         preview = self.session._preview_node()

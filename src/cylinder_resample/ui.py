@@ -11,6 +11,7 @@ from .compat import ensure_supported
 
 WINDOW = "CylinderResampleWindow"
 MODES = ("contour", "uniform", "circle")
+UV_POLICIES = ("adaptive", "strict")
 _SESSION = None
 _UPDATING = False
 
@@ -121,12 +122,13 @@ class Session:
         return (cmds.intSliderGrp(self.controls["count"], query=True, value=True),
                 MODES[cmds.radioButtonGrp(self.controls["mode"], query=True, select=True) - 1],
                 cmds.checkBox(self.controls["uv"], query=True, value=True),
-                cmds.checkBox(self.controls["hard"], query=True, value=True))
+                cmds.checkBox(self.controls["hard"], query=True, value=True),
+                UV_POLICIES[cmds.radioButtonGrp(self.controls["uv_policy"], query=True, select=True) - 1])
 
     def _summary(self):
         if not self.snapshot:
             return "等待分析"
-        count, mode, keep_uv, keep_hard = self._params()
+        count, mode, keep_uv, keep_hard, uv_policy = self._params()
         if (self._constraint_snapshot is not self.snapshot or
                 self._constraint_topology is not self.analysis or
                 self._constraint_analysis is None or
@@ -135,7 +137,8 @@ class Session:
                 self.snapshot, self.analysis, include_uvs=keep_uv)
             self._constraint_snapshot, self._constraint_topology = self.snapshot, self.analysis
         constraints = adapter.constraint_summary(self.snapshot, self.analysis, keep_uv, keep_hard,
-                                                 constraints=self._constraint_analysis)
+                                                 constraints=self._constraint_analysis,
+                                                 uv_policy=uv_policy, target_count=count)
         shape = adapter.live_shape(self.snapshot)
         details = list(self.snapshot["warnings"])
         if keep_uv:
@@ -148,13 +151,19 @@ class Session:
             details.append("共面端盖冗余硬边：{} 条，不锁定段数。".format(constraints["ignored_cap_hard_edges"]))
         if count < constraints["minimum_count"]:
             details.append("当前目标低于最低段数。")
-        if mode == "circle" and constraints["protected_count"] > 1:
+        if keep_uv and uv_policy == "adaptive":
+            details.insert(0, "严格保留全部接缝至少需要 {} 段。".format(constraints["strict_minimum_count"]))
+        if constraints.get("transfer_required"):
+            details.insert(0, "目标 {} 段将触发 UV 转移，至少 {} 列接缝需要调整。请在预览中检查贴图。".format(
+                count, constraints["relaxed_uv_count"]))
+        if mode == "circle" and constraints["protected_count"] > 1 and not constraints.get("transfer_required"):
             details.append("圆形拟合：{} 个边界位置固定，等角度分段受各区间可分段数限制。".format(
                 constraints["protected_count"]))
-        return "{}\n圆周：{} 段    截面：{} 圈    处理面数：{}\n约束列：{}    最低目标段数：{}\nUV 接缝：{}    材质边界：{}    硬边：{}（列，可重叠）\n{}".format(
+        columns_label = "材质与硬边固定列" if constraints.get("transfer_required") else "约束列"
+        return "{}\n圆周：{} 段    截面：{} 圈    处理面数：{}\n{}：{}    最低目标段数：{}\nUV 接缝：{}    材质边界：{}    硬边：{}（列，可重叠）\n{}".format(
             shape.split("|")[-2] if "|" in shape else shape,
             self.analysis["source_count"], len(self.analysis["rings"]),
-            len(self.analysis["face_ids"]), constraints["protected_count"],
+            len(self.analysis["face_ids"]), columns_label, constraints["protected_count"],
             constraints["minimum_count"], constraints.get("uv_count", 0),
             constraints.get("material_count", 0), constraints.get("hard_count", 0),
             "\n".join(details))
@@ -190,6 +199,9 @@ class Session:
                           ("beside", "CylinderResampleBeside")):
             cmds.optionVar(intValue=(name, int(cmds.checkBox(self.controls[key], query=True, value=True))))
         cmds.optionVar(intValue=("CylinderResampleMode", cmds.radioButtonGrp(self.controls["mode"], query=True, select=True)))
+        policy = self.controls["uv_policy"]
+        cmds.radioButtonGrp(policy, edit=True, enable=cmds.checkBox(self.controls["uv"], query=True, value=True))
+        cmds.optionVar(intValue=("CylinderResampleUVPolicy", cmds.radioButtonGrp(policy, query=True, select=True)))
         text = self._summary()
         if self._preview_node():
             text += "\n参数已更改，当前预览尚未更新。"
@@ -203,9 +215,10 @@ class Session:
     def preview(self):
         if not self.snapshot:
             raise adapter.ToolError("请先分析圆周边环。")
-        count, mode, keep_uv, keep_hard = self._params()
+        count, mode, keep_uv, keep_hard, uv_policy = self._params()
         with adapter.undo_chunk("CylinderResamplePreview"):
-            built = adapter.build_result(self.snapshot, count, mode, keep_uv, keep_hard, _undo_chunk=False)
+            built = adapter.build_result(self.snapshot, count, mode, keep_uv, keep_hard,
+                                         _undo_chunk=False, uv_policy=uv_policy)
             self._restore_source()
             self._delete_preview()
             source = self._source_shape()
@@ -353,11 +366,18 @@ class Session:
                                                      labelArray3=("保留原轮廓", "均匀重采样", "圆形拟合"),
                                                      select=min(3, max(1, int(self._preference("CylinderResampleMode", 1)))),
                                                      columnWidth3=(145, 145, 130),
-                                                     annotation="分段按所选边环分配，所有截面同步；UV 接缝、材质边界和硬边仍会保留。",
+                                                     annotation="分段按所选边环分配，所有截面同步。",
                                                      changeCommand=lambda *_: self.run(self.params_changed))
-        self.controls["uv"] = cmds.checkBox(label="保留 UV", value=bool(self._preference("CylinderResampleUV", 1)),
-                                             annotation="开启时保留所有 UV 集并保护接缝；关闭时取消 UV 约束且结果无 UV，硬边和材质仍独立保护。",
+        keep_uv = bool(self._preference("CylinderResampleUV", 1))
+        self.controls["uv"] = cmds.checkBox(label="保留 UV", value=keep_uv,
+                                             annotation="保留所有 UV 集。关闭后结果无 UV，材质边界和硬边独立控制。",
                                              changeCommand=lambda *_: self.run(self.params_changed))
+        self.controls["uv_policy"] = cmds.radioButtonGrp(
+            numberOfRadioButtons=2, labelArray2=("自适应转移", "严格保留接缝"),
+            select=min(2, max(1, int(self._preference("CylinderResampleUVPolicy", 1)))),
+            enable=keep_uv, columnWidth2=(145, 145),
+            annotation="自适应转移在段数足够时保留全部接缝。段数不足时按源 UV 岛取样，局部贴图可能改变。",
+            changeCommand=lambda *_: self.run(self.params_changed))
         self.controls["hard"] = cmds.checkBox(label="保留硬边", value=bool(self._preference("CylinderResampleHard", 1)),
                                                annotation="保留边的软硬状态；纵向硬边会占用目标段数。锁定法线会重新计算。",
                                                changeCommand=lambda *_: self.run(self.params_changed))
