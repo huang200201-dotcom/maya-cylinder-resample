@@ -13,6 +13,7 @@ import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from . import core
+from . import material_uv_links
 
 
 class ToolError(ValueError):
@@ -63,6 +64,17 @@ def selected_edge_loop():
     return snapshot_mesh(shape, pairs)
 
 
+def _shader_table(mesh, instance_number):
+    shaders, indices = mesh.getConnectedShaders(instance_number)
+    names = [om.MFnDependencyNode(shader).absoluteName() for shader in shaders]
+    indices = list(indices)
+    if not indices and not names:
+        indices = [-1] * mesh.numPolygons
+    if len(indices) != mesh.numPolygons or any(i < -1 or i >= len(names) for i in indices):
+        raise ToolError("无法读取完整的逐面材质分配，请检查模型的着色组。")
+    return names, indices
+
+
 def snapshot_mesh(shape, seed_edges):
     if not cmds.objExists(shape):
         raise ToolError("原模型已被删除或改名，请重新分析。")
@@ -80,8 +92,11 @@ def snapshot_mesh(shape, seed_edges):
         u, v = mesh.getUVs(name)
         uv_counts, ids = mesh.getAssignedUVs(name)
         uv_sets[name] = {"u": list(u), "v": list(v), "counts": list(uv_counts), "ids": list(ids)}
-    shaders, assignments = mesh.getConnectedShaders(dag.instanceNumber())
-    materials = [om.MFnDependencyNode(shader).name() for shader in shaders]
+    default_uv_set = next(iter(uv_sets), None)
+    if len(uv_sets) > 1:
+        slots = cmds.polyUVSet(shape, query=True, allUVSetsIndices=True)
+        default_uv_set = cmds.getAttr("{}.uvSet[{}].uvSetName".format(shape, min(slots)))
+    materials, assignments = _shader_table(mesh, dag.instanceNumber())
     shading = {}
     for edge in range(mesh.numEdges):
         pair = tuple(sorted(mesh.getEdgeVertices(edge)))
@@ -108,6 +123,7 @@ def snapshot_mesh(shape, seed_edges):
             "metric_points": [tuple(point)[:3] for point in mesh.getPoints(om.MSpace.kWorld)],
             "shape_handle": om.MObjectHandle(dag.node()), "instance_number": dag.instanceNumber(),
             "current_uv_set": mesh.currentUVSetName(dag.instanceNumber()),
+            "default_uv_set": default_uv_set,
             "display_smooth_mesh": cmds.getAttr(shape + ".displaySmoothMesh"),
             "smooth_level": cmds.getAttr(shape + ".smoothLevel"),
             "fingerprint": fingerprint, "warnings": warnings}
@@ -207,17 +223,22 @@ def _uv_columns_by_set(analysis, uv_data):
 def analyze_constraints(snapshot, analysis, include_uvs=True):
     """Freeze boundary columns, not the mutable UV data used during rebuilding."""
     uv_data = core._parse_uvs(snapshot["uv_sets"], snapshot["faces"]) if include_uvs else {}
-    uv_by_set = _uv_columns_by_set(analysis, uv_data)
-    uv_columns = frozenset(column for _, columns in uv_by_set for column in columns)
-    material, hard, ignored = _column_constraints(snapshot, analysis, True)
+    caps_only = dict(analysis, bands=())
+    uv_columns_by_set = {name: set(columns) for name, columns in _uv_columns_by_set(caps_only, uv_data)}
+    material, hard, ignored = _column_constraints(snapshot, caps_only, True)
     per_band = []
     for band in analysis["bands"]:
-        single_band = {"rings": analysis["rings"], "source_count": analysis["source_count"],
-                       "bands": (band,), "caps": ()}
+        single_band = dict(analysis, bands=(band,), caps=())
         band_material, band_hard, _ = _column_constraints(snapshot, single_band, True)
-        per_band.append(ConstraintBand(tuple(band["rings"]),
-                                       _uv_columns_by_set(single_band, uv_data),
+        band_uv = _uv_columns_by_set(single_band, uv_data)
+        material.update(band_material)
+        hard.update(band_hard)
+        for name, columns in band_uv:
+            uv_columns_by_set[name].update(columns)
+        per_band.append(ConstraintBand(tuple(band["rings"]), band_uv,
                                        frozenset(band_material), frozenset(band_hard)))
+    uv_by_set = tuple((name, frozenset(columns)) for name, columns in sorted(uv_columns_by_set.items()))
+    uv_columns = frozenset(column for _, columns in uv_by_set for column in columns)
     # Owner references are only for identity checks; all computed data is immutable.
     return ConstraintAnalysis(snapshot, analysis, snapshot.get("fingerprint"), bool(include_uvs),
                               uv_by_set, uv_columns, frozenset(material), frozenset(hard),
@@ -225,7 +246,7 @@ def analyze_constraints(snapshot, analysis, include_uvs=True):
 
 
 def constraint_summary(snapshot, analysis, preserve_uvs=True, preserve_hard_edges=True,
-                       constraints=None):
+                       constraints=None, uv_policy="strict", target_count=None):
     if constraints is not None:
         if (not isinstance(constraints, ConstraintAnalysis) or constraints.snapshot is not snapshot
                 or constraints.analysis is not analysis
@@ -237,23 +258,29 @@ def constraint_summary(snapshot, analysis, preserve_uvs=True, preserve_hard_edge
     uv_by_set = constraints.uv_by_set if preserve_uvs else ()
     material = constraints.material_columns
     hard = constraints.hard_columns if preserve_hard_edges else frozenset()
-    protected = material | hard | uv_columns
-    return {"protected_count": len(protected), "minimum_count": max(3, len(protected)),
+    geometry = material | hard
+    target = analysis["source_count"] if target_count is None else target_count
+    plan = core.plan_uv_reduction(geometry, uv_columns, target, uv_policy)
+    protected = geometry if uv_policy == "adaptive" and target < plan["strict_minimum_count"] else geometry | uv_columns
+    return {**plan, "protected_count": len(protected), "geometry_count": len(geometry),
             "uv_count": len(uv_columns), "material_count": len(material), "hard_count": len(hard),
-            "minimum_without_hard": max(3, len(material | uv_columns)),
+            "minimum_without_hard": max(3, len(material if uv_policy == "adaptive" else material | uv_columns)),
             "ignored_cap_hard_edges": constraints.ignored_cap_hard_edges if preserve_hard_edges else 0,
             "uv_enabled": bool(preserve_uvs), "uv_by_set": uv_by_set,
             "uv_set_counts": tuple((name, len(columns)) for name, columns in uv_by_set)}
 
 
-def _constraint_message(snapshot, analysis, target_count, preserve_uvs, preserve_hard_edges):
-    summary = constraint_summary(snapshot, analysis, preserve_uvs, preserve_hard_edges)
+def _constraint_message(snapshot, analysis, target_count, preserve_uvs, preserve_hard_edges, uv_policy="strict"):
+    summary = constraint_summary(snapshot, analysis, preserve_uvs, preserve_hard_edges,
+                                 uv_policy=uv_policy, target_count=target_count)
     message = ("目标 {} 段低于当前保护所需的 {} 段。\n"
                "UV 接缝：{} 列；材质边界：{} 列；硬边：{} 列（可重叠）。").format(
         target_count, summary["minimum_count"], summary["uv_count"],
         summary["material_count"], summary["hard_count"])
     if not preserve_uvs:
         message += "\nUV 保护已关闭；当前限制来自材质边界或硬边。"
+    elif uv_policy == "adaptive":
+        message += "\nUV 自适应转移已开启；当前最低段数由材质边界和受保护的硬边决定。"
     elif summary["uv_count"]:
         counts = sorted(summary["uv_set_counts"], key=lambda item: (-item[1], item[0]))
         blocking = [(name, count) for name, count in counts if count > target_count]
@@ -266,9 +293,11 @@ def _constraint_message(snapshot, analysis, target_count, preserve_uvs, preserve
     if summary["hard_count"] and target_count >= summary["minimum_without_hard"]:
         message += "\n可以取消“保留硬边”后重试{}；结果将重新计算软硬法线。".format(
             "，仍可保留 UV" if preserve_uvs else "")
+    elif preserve_uvs and uv_policy == "strict" and target_count >= max(3, summary["geometry_count"]):
+        message += "\n严格保缝下，真实 UV 分岛或材质边界无法跨越。切换到“自适应转移”可以保留 UV 集并降低段数，局部贴图可能改变。"
     else:
         message += "\n{}不能直接跨越；请提高段数，或先在模型副本上整理这些边界。".format(
-            "真实 UV 分岛或材质边界" if preserve_uvs else "材质边界")
+            "真实 UV 分岛或材质边界" if preserve_uvs and uv_policy == "strict" else "受保护的几何边界")
     return message
 
 
@@ -283,6 +312,34 @@ def _component_ranges(node, face_ids):
             start = end = index
     ranges.append("{}.f[{}:{}]".format(node, start, end))
     return ranges
+
+
+def _write_materials(node, shape, snapshot, face_sources):
+    names = snapshot["materials"]
+    indices = snapshot["assignments"]
+    if {indices[fi] for fi in face_sources} != set(indices):
+        raise ToolError("目标网格无法保留全部材质分区，请提高段数。")
+    expected = [names[indices[fi]] if indices[fi] >= 0 else None for fi in face_sources]
+    dag = _dag(shape)
+    mesh = om.MFnMesh(dag)
+    instance = dag.instanceNumber()
+    by_group = defaultdict(list)
+    for index, group in enumerate(expected):
+        by_group[group].append(index)
+    if None in by_group:
+        # A fresh shape may already belong to the scene's default shading group.
+        inherited, _ = _shader_table(mesh, instance)
+        for group in inherited:
+            cmds.sets(node, edit=True, remove=group)
+    for group, face_ids in by_group.items():
+        if group is not None:
+            members = node if len(face_ids) == len(expected) else _component_ranges(node, face_ids)
+            cmds.sets(members, edit=True, forceElement=group)
+    actual_names, actual_ids = _shader_table(mesh, instance)
+    actual = [actual_names[index] if index >= 0 else None for index in actual_ids]
+    if actual != expected:
+        raise ToolError("结果的逐面材质与原模型不一致，本次重建已中止。")
+    return [name for name in by_group if name is not None]
 
 
 def _edge_smoothing(snapshot, result, preserve_hard_edges):
@@ -377,7 +434,7 @@ def _ensure_mesh_command():
 
 
 def build_result(snapshot, target_count, shape_mode="contour", preserve_uvs=True,
-                 preserve_hard_edges=True, name=None, _undo_chunk=True):
+                 preserve_hard_edges=True, name=None, _undo_chunk=True, uv_policy="strict"):
     current = snapshot_mesh(live_shape(snapshot), snapshot["seed_edges"])
     if current["fingerprint"] != snapshot["fingerprint"]:
         raise ToolError("模型在分析后发生了变化，请重新分析圆周边环。")
@@ -387,37 +444,35 @@ def build_result(snapshot, target_count, shape_mode="contour", preserve_uvs=True
         result = core.resample_mesh(current["points"], current["faces"], current["seed_edges"],
                                     target_count, uv_sets=current["uv_sets"], shape_mode=shape_mode,
                                     preserve_uvs=preserve_uvs, protected_columns=protected,
-                                    metric_points=current["metric_points"], _analysis=analysis)
+                                    metric_points=current["metric_points"], _analysis=analysis, uv_policy=uv_policy,
+                                    preferred_uv_set=current["current_uv_set"])
     except core.ConstraintError as error:
         raise ToolError(_constraint_message(current, analysis, target_count, preserve_uvs,
-                                            preserve_hard_edges)) from error
+                                            preserve_hard_edges, uv_policy)) from error
     if result.get("stats", {}).get("spacing_limited_by_constraints"):
-        summary = constraint_summary(current, analysis, preserve_uvs, preserve_hard_edges)
+        summary = constraint_summary(current, analysis, preserve_uvs, preserve_hard_edges,
+                                     uv_policy=uv_policy, target_count=target_count)
+        fixed_uv = summary["uv_count"] - result["stats"].get("relaxed_uv_count", 0)
         result["warnings"].append(
             "间距约束来源：UV 接缝 {} 列、材质边界 {} 列、硬边 {} 列（可重叠）。".format(
-                summary["uv_count"], summary["material_count"], summary["hard_count"]))
+                fixed_uv, summary["material_count"], summary["hard_count"]))
     leaf = current["transform"].split("|")[-1].replace(":", "_")
     create_command = _ensure_mesh_command()
     smoothing = _edge_smoothing(current, result, preserve_hard_edges)
     data = {"points": result["points"], "faces": result["faces"], "uv_sets": result["uv_sets"],
             "smoothing": [[list(pair), value] for pair, value in smoothing.items()],
             "name": name or leaf + "_resampled#", "matrix": current["matrix"],
-            "current_uv_set": current["current_uv_set"]}
+            "current_uv_set": current["current_uv_set"], "default_uv_set": current.get("default_uv_set")}
     node = None
     if _undo_chunk:
         cmds.undoInfo(openChunk=True, chunkName="CylinderResample")
     try:
         node = getattr(cmds, create_command)(data=json.dumps(data, separators=(",", ":")))
-        cmds.sets(node, edit=True, forceElement="initialShadingGroup")
-        by_material = defaultdict(list)
-        for new_face, old_face in enumerate(result["face_sources"]):
-            material_index = current["assignments"][old_face]
-            if 0 <= material_index < len(current["materials"]):
-                by_material[current["materials"][material_index]].append(new_face)
-        for material, face_ids in by_material.items():
-            components = _component_ranges(node, face_ids)
-            cmds.sets(components, edit=True, forceElement=material)
         output_shape = cmds.listRelatives(node, shapes=True, fullPath=True)[0]
+        groups = _write_materials(node, output_shape, current, result["face_sources"])
+        if len(result["uv_sets"]) > 1 and groups:
+            material_uv_links.copy_texture_uv_links(cmds, current["shape"], output_shape,
+                                                    result["uv_sets"], groups)
         cmds.setAttr(output_shape + ".displaySmoothMesh", current["display_smooth_mesh"])
         cmds.setAttr(output_shape + ".smoothLevel", current["smooth_level"])
         cmds.addAttr(node, longName="cylinderResampleSource", dataType="string")

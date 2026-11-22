@@ -152,7 +152,7 @@ class MayaIntegrationTests(unittest.TestCase):
         matrix = cmds.xform(new_node, query=True, worldSpace=True, matrix=True)
         self.assertTrue(all(abs(a - b) < 1e-7 for a, b in zip(matrix, source["matrix"])))
         shaders, assignments = new_mesh.getConnectedShaders(0)
-        names = [om.MFnDependencyNode(shader).name() for shader in shaders]
+        names = [om.MFnDependencyNode(shader).absoluteName() for shader in shaders]
         for source_id, material in zip(built["result"]["face_sources"], assignments):
             expected = source["materials"][source["assignments"][source_id]]
             self.assertEqual(names[material], expected)
@@ -176,6 +176,78 @@ class MayaIntegrationTests(unittest.TestCase):
         cmds.redo()
         second_shape = cmds.listRelatives(new_node, shapes=True, fullPath=True)[0]
         self.assertEqual(om.MFnMesh(adapter._dag(second_shape)).numVertices, 90)
+
+    def test_adaptive_reduction_writes_fragmented_secondary_uv_set_and_undo(self):
+        profile = ((0.8, 0), (1.0, 0.2), (1.0, 1.8), (0.8, 2))
+        points, faces, seed = cylinder(n=20, profile=profile, caps="ngon")
+        uv_sets = strip_uvs(faces, n=20, ring_count=4)
+        uv_sets["lightmap"] = strip_uvs(faces, n=20, ring_count=4, separate_faces=True)["map1"]
+        source_node, shape, mesh = make_mesh(points, faces, uv_sets)
+        mesh.setCurrentUVSetName("map1")
+        shader = cmds.shadingNode("lambert", asShader=True, name="paintMaterial")
+        group = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name="paintSG")
+        cmds.connectAttr(shader + ".outColor", group + ".surfaceShader", force=True)
+        cmds.sets([source_node + ".f[3:6]", source_node + ".f[60]"], edit=True, forceElement=group)
+        source = adapter.snapshot_mesh(shape, seed)
+        with self.assertRaises(adapter.ToolError):
+            adapter.build_result(source, 9, uv_policy="strict")
+        built = adapter.build_result(source, 9, shape_mode="circle", uv_policy="adaptive")
+        node = built["node"]
+        self.assertTrue(built["result"]["stats"]["uv_transfer_used"])
+        for _ in range(2):
+            new_shape = cmds.listRelatives(node, shapes=True, fullPath=True)[0]
+            result = om.MFnMesh(adapter._dag(new_shape))
+            self.assertEqual(result.numPolygons, 9 * 3 + 2)
+            self.assertEqual(result.currentUVSetName(), "map1")
+            self.assertEqual(set(result.getUVSetNames()), set(uv_sets))
+            names, assignments = adapter._shader_table(result, 0)
+            expected = [source["materials"][source["assignments"][fi]] for fi in built["result"]["face_sources"]]
+            self.assertEqual([names[index] for index in assignments], expected)
+            self.assertEqual(set(expected), {":initialShadingGroup", ":paintSG"})
+            for name in uv_sets:
+                counts, ids = result.getAssignedUVs(name)
+                self.assertEqual(list(counts), built["result"]["uv_sets"][name]["counts"])
+                self.assertEqual(list(ids), built["result"]["uv_sets"][name]["ids"])
+            cmds.undo()
+            self.assertFalse(cmds.objExists(node))
+            cmds.redo()
+        self.assertEqual(adapter.snapshot_mesh(shape, seed)["fingerprint"], source["fingerprint"])
+
+    def test_texture_on_secondary_uv_set_is_linked_to_reduced_copy_and_restored_on_redo(self):
+        points, faces, seed = cylinder(n=20, caps="ngon")
+        uv_sets = strip_uvs(faces, n=20)
+        uv_sets["detail"] = strip_uvs(faces, n=20, separate_faces=True)["map1"]
+        _, shape, mesh = make_mesh(points, faces, uv_sets)
+        mesh.setCurrentUVSetName("map1")
+        shader = cmds.shadingNode("lambert", asShader=True)
+        group = cmds.sets(renderable=True, noSurfaceShader=True, empty=True)
+        cmds.connectAttr(shader + ".outColor", group + ".surfaceShader")
+        texture = cmds.shadingNode("checker", asTexture=True)
+        placement = cmds.shadingNode("place2dTexture", asUtility=True)
+        cmds.connectAttr(placement + ".outUV", texture + ".uvCoord")
+        cmds.connectAttr(texture + ".outColor", shader + ".color")
+        cmds.sets(shape, edit=True, forceElement=group)
+
+        def detail_plug(dag_path):
+            for index in cmds.polyUVSet(dag_path, query=True, allUVSetsIndices=True):
+                plug = "{}.uvSet[{}].uvSetName".format(dag_path, index)
+                if cmds.getAttr(plug) == "detail":
+                    return plug
+            self.fail("Missing detail UV set on " + dag_path)
+
+        original_plug = detail_plug(shape)
+        cmds.uvLink(make=True, texture=texture, uvSet=original_plug)
+        source = adapter.snapshot_mesh(shape, seed)
+        result = adapter.build_result(source, 9, uv_policy="adaptive", preserve_hard_edges=False)
+        node = result["node"]
+        for _ in range(2):
+            result_shape = cmds.listRelatives(node, shapes=True, fullPath=True)[0]
+            self.assertIn(texture, cmds.uvLink(query=True, uvSet=detail_plug(result_shape)))
+            self.assertIn(texture, cmds.uvLink(query=True, uvSet=original_plug))
+            cmds.undo()
+            self.assertFalse(cmds.objExists(node))
+            self.assertIn(texture, cmds.uvLink(query=True, uvSet=original_plug))
+            cmds.redo()
 
     def test_edge_selection_snapshot_and_hard_edge_boundary(self):
         points, faces, seed = cylinder()

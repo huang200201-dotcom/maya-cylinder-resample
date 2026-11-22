@@ -35,7 +35,8 @@ class ConstraintUiTests(unittest.TestCase):
                      ("lightmap", frozenset((4, 5, 6, 7)))) if include_uvs else (),
             materials=frozenset((6, 8)), hard=frozenset((8, 9)))
 
-    def summarize_constraints(self, snapshot, analysis, preserve_uvs, preserve_hard_edges, constraints=None):
+    def summarize_constraints(self, snapshot, analysis, preserve_uvs, preserve_hard_edges, constraints=None,
+                              uv_policy="strict", target_count=None):
         self.assertIsNotNone(constraints)
         self.assertIs(constraints.snapshot, snapshot)
         self.assertIs(constraints.topology, analysis)
@@ -43,8 +44,10 @@ class ConstraintUiTests(unittest.TestCase):
         uv = set().union(*(columns for _, columns in constraints.uv_sets)) if preserve_uvs else set()
         hard = constraints.hard if preserve_hard_edges else set()
         protected = uv.union(constraints.materials, hard)
-        return {
-            "protected_count": len(protected), "minimum_count": max(3, len(protected)),
+        from cylinder_resample.core import plan_uv_reduction
+        plan = plan_uv_reduction(constraints.materials | hard, uv, target_count, uv_policy)
+        return {**plan,
+            "protected_count": len(constraints.materials | hard) if plan["transfer_required"] else len(protected),
             "uv_count": len(uv), "hard_count": len(hard),
             "material_count": len(constraints.materials),
             "uv_set_counts": tuple((name, len(columns)) for name, columns in constraints.uv_sets)
@@ -246,6 +249,7 @@ class ConstraintUiTests(unittest.TestCase):
         self.assertIn("当前预览尚未更新", self.status())
 
     def test_summary_reports_each_uv_set_and_overlapping_boundary_counts(self):
+        self.scene.controls["uv_policy"]["select"] = 2
         self.read()
         self.session.snapshot["warnings"].append("Fixture source warning")
         text = self.session._summary()
@@ -265,6 +269,41 @@ class ConstraintUiTests(unittest.TestCase):
         self.session.params_changed()
         self.assertIn("10 个边界位置固定", self.status())
         self.assertEqual(self.analyzer.call_count, 1)
+
+    def test_uv_policy_switch_updates_minimum_and_reuses_selection_cache(self):
+        cache = self.read()
+        self.scene.controls["count"]["value"] = 5
+        self.session.params_changed()
+        self.assertIn("最低目标段数：3", self.status())
+        self.assertIn("严格保留全部接缝至少需要 10 段", self.status())
+        self.assertIn("至少 5 列接缝需要调整", self.status())
+        self.scene.controls["uv_policy"]["select"] = 2
+        self.session.params_changed()
+        self.assertIn("最低目标段数：10", self.status())
+        self.assertIn("当前目标低于最低段数", self.status())
+        self.assertNotIn("触发 UV 转移", self.status())
+        self.assertIn({"intValue": ("CylinderResampleUVPolicy", 2)}, self.preferences)
+        self.scene.controls["uv"]["value"] = False
+        self.session.params_changed()
+        self.assertFalse(self.scene.controls["uv_policy"]["enable"])
+        self.assertIn("结果不生成 UV", self.status())
+        self.assertIs(self.session._constraint_analysis, cache)
+        self.assertEqual(self.analyzer.call_count, 1)
+
+    def test_preview_passes_selected_policy_and_displays_transfer_warning(self):
+        self.read()
+        original = self.ui.adapter.build_result
+        warning = "转移 UV 后，局部贴图可能改变"
+
+        def build(*args, **kwargs):
+            self.assertEqual(kwargs["uv_policy"], "adaptive")
+            result = original(*args, **kwargs)
+            result["warnings"].append(warning)
+            return result
+
+        with patch.object(self.ui.adapter, "build_result", side_effect=build):
+            self.session.preview()
+        self.assertIn(warning, self.status())
 
     def test_preview_reports_worst_ring_as_well_as_selected_ring(self):
         self.read()
@@ -316,6 +355,7 @@ class ConstraintUiTests(unittest.TestCase):
         self.assertNotIn("已验证兼容段数", self.status())
 
     def test_minimum_and_low_target_warning_change_immediately_with_toggles(self):
+        self.scene.controls["uv_policy"]["select"] = 2
         self.read()
         self.scene.controls["count"]["value"] = 5
         self.session.params_changed()

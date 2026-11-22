@@ -10,6 +10,23 @@ def maya_useNewAPI():
     pass
 
 
+def _write_uv_sets(mesh, sets, current, default):
+    if not sets:
+        return
+    first = default if default in sets else next(iter(sets))
+    original = mesh.getUVSetNames()
+    if original and original[0] != first:
+        mesh.renameUVSet(original[0], first)
+    for name in [first] + [item for item in sets if item != first]:
+        values = sets[name]
+        if name not in mesh.getUVSetNames():
+            mesh.createUVSet(name)
+        mesh.clearUVs(name)
+        mesh.setUVs(values["u"], values["v"], name)
+        mesh.assignUVs(values["counts"], values["ids"], name)
+    mesh.setCurrentUVSetName(current if current in sets else first)
+
+
 class CreateMeshCommand(om.MPxCommand):
     def __init__(self):
         super().__init__()
@@ -44,17 +61,7 @@ class CreateMeshCommand(om.MPxCommand):
                         [len(face) for face in data["faces"]],
                         [vertex for face in data["faces"] for vertex in face], parent=self._node)
             mesh.setName(transform.name() + "Shape")
-            for name, values in data["uv_sets"].items():
-                if name not in mesh.getUVSetNames():
-                    mesh.createUVSet(name)
-                mesh.clearUVs(name)
-                mesh.setUVs(values["u"], values["v"], name)
-                mesh.assignUVs(values["counts"], values["ids"], name)
-            if data["uv_sets"]:
-                current = data.get("current_uv_set")
-                mesh.setCurrentUVSetName(current if current in data["uv_sets"] else next(iter(data["uv_sets"])))
-                if "map1" not in data["uv_sets"] and "map1" in mesh.getUVSetNames():
-                    mesh.deleteUVSet("map1")
+            _write_uv_sets(mesh, data["uv_sets"], data.get("current_uv_set"), data.get("default_uv_set"))
             smoothing = {tuple(pair): value for pair, value in data["smoothing"]}
             smooths = om.MIntArray()
             for edge in range(mesh.numEdges):
