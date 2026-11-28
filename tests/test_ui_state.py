@@ -682,6 +682,32 @@ class SessionStateTests(unittest.TestCase):
         self.assertTrue(new_preview.alive)
         self.assertFalse(new_preview.attrs["visibility"])
 
+    def test_preview_records_do_not_retain_heavy_snapshot_or_analysis(self):
+        self.start_preview()
+        self.assertEqual(len(self.session.preview_records), 1)
+        record = self.session.preview_records[0]
+        self.assertNotIn("snapshot", record)
+        self.assertNotIn("analysis", record)
+
+    def test_read_selection_rejects_active_preview_without_deleting_it(self):
+        preview = self.start_preview()
+        SCENE.selection = preview
+        with self.assertRaisesRegex(ValueError, "不能直接分析当前预览模型"):
+            self.session.read_selection()
+        self.assertTrue(preview.alive)
+        self.assertEqual(self.session._preview_node(), preview.path)
+        self.assertFalse(self.source.attrs["visibility"])
+
+    def test_set_exact_count_clamps_and_updates_slider(self):
+        self.session.read_selection()
+        with patch.object(self.ui_module.cmds, "optionVar", lambda **kwargs: None, create=True):
+            self.session.set_exact_count(24)
+            self.assertEqual(SCENE.controls["count"]["value"], 24)
+            self.session.set_exact_count(1)
+            self.assertEqual(SCENE.controls["count"]["value"], 3)
+            self.session.set_exact_count(9999)
+            self.assertEqual(SCENE.controls["count"]["value"], 4096)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

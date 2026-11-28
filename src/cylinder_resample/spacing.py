@@ -19,6 +19,51 @@ def _compatible_count(fractions, count):
     return rounded_total == count
 
 
+def _shared_compatible(fraction_sets, count):
+    first_quotas = None
+    for fractions in fraction_sets:
+        rounded_total = 0
+        quotas = []
+        for fraction in fractions:
+            quota = fraction * count
+            rounded = int(math.floor(quota + 0.5))
+            if rounded < 1 or abs(quota - rounded) > _COUNT_TOLERANCE:
+                return False
+            rounded_total += rounded
+            quotas.append(rounded)
+        if rounded_total != count:
+            return False
+        if first_quotas is None:
+            first_quotas = quotas
+        elif quotas != first_quotas:
+            return False
+    return first_quotas is not None
+
+
+def find_common_compatible_counts(fraction_sets, target, pin_count):
+    """Find nearest smaller and larger counts compatible across all rings."""
+    unique = []
+    seen = set()
+    for fractions in fraction_sets:
+        key = tuple(round(value, 10) for value in fractions)
+        if key not in seen:
+            seen.add(key)
+            unique.append(fractions)
+    if not unique:
+        return ()
+    minimum = max(_MIN_TARGET, pin_count)
+    nearby = []
+    for candidate in range(target - 1, minimum - 1, -1):
+        if _shared_compatible(unique, candidate):
+            nearby.append(candidate)
+            break
+    for candidate in range(max(target + 1, minimum), _MAX_TARGET + 1):
+        if _shared_compatible(unique, candidate):
+            nearby.append(candidate)
+            break
+    return tuple(nearby)
+
+
 def analyze_spacing(lengths, pins, target, find_compatible_counts=True):
     """Describe whether equal measure intervals can retain every fixed column.
 

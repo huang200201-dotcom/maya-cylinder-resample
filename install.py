@@ -37,7 +37,7 @@ def install():
     if not all(os.path.isfile(os.path.join(source, name))
                for name in ("__init__.py", "core.py", "spacing.py", "topology.py", "uv_transfer.py",
                             "adapter.py", "ui.py", "mesh_command.py", "material_uv_links.py",
-                            "updater.py", "update_ui.py", "config.json", "compat.py")):
+                            "updater.py", "update_ui.py", "config.json", "compat.py", "self_test.py")):
         raise RuntimeError("请先完整解压 CylinderResample 工具包，再将 install.py 拖入 Maya。")
     spec = importlib.util.spec_from_file_location("_cylinder_resample_install_compat", os.path.join(source, "compat.py"))
     compatibility = importlib.util.module_from_spec(spec)

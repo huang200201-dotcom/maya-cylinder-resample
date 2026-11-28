@@ -59,7 +59,10 @@ class ReductionAdapterTests(unittest.TestCase):
         payloads = []
 
         def create(**kwargs):
-            payloads.append(json.loads(kwargs["data"]))
+            if "key" in kwargs:
+                payloads.append(self.adapter._consume_mesh_payload(kwargs["key"]))
+            else:
+                payloads.append(json.loads(kwargs["data"]))
             return "|Result"
 
         with ExitStack() as stack:
@@ -419,6 +422,86 @@ class ReductionAdapterTests(unittest.TestCase):
         self.assertNotIn("真实 UV 分岛", message)
         self.assertNotIn("仍可保留 UV", message)
         self.assertNotIn("取消“保留硬边”", message)
+
+    def test_build_result_sends_only_hard_edges_and_reuses_cached_analysis(self):
+        snapshot = fan_snapshot(all_cap_hard=False)
+        snapshot["smoothing"][(2, 22)] = False
+        analysis = self.adapter.analyze(snapshot)
+        constraints = self.adapter.analyze_constraints(snapshot, analysis)
+        with patch.object(self.adapter, "analyze", side_effect=AssertionError("should reuse analysis")), \
+                patch.object(self.adapter, "_protected_columns", side_effect=AssertionError("should reuse cache")):
+            payloads = []
+
+            def create(**kwargs):
+                payloads.append(self.adapter._consume_mesh_payload(kwargs["key"]))
+                return "|Result"
+
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(self.adapter, "snapshot_mesh", return_value=snapshot))
+                stack.enter_context(patch.object(self.adapter, "_write_materials", return_value=[]))
+                stack.enter_context(patch.object(self.adapter, "_ensure_mesh_command", return_value="createFixture"))
+                stack.enter_context(patch.object(self.adapter.cmds, "createFixture", create, create=True))
+                for name in ("sets", "setAttr", "addAttr", "select"):
+                    stack.enter_context(patch.object(self.adapter.cmds, name, Mock(), create=True))
+                stack.enter_context(patch.object(self.adapter.cmds, "listRelatives",
+                                                return_value=["|Result|ResultShape"], create=True))
+                stack.enter_context(patch.object(self.adapter.cmds, "ls", return_value=["|Result"], create=True))
+                self.adapter.build_result(snapshot, 10, _undo_chunk=False,
+                                          _analysis=analysis, _constraints=constraints)
+        self.assertEqual(len(payloads), 1)
+        self.assertTrue(all(value is False for _, value in payloads[0]["smoothing"]))
+        self.assertEqual(len(payloads[0]["smoothing"]), 1)
+
+    def test_mesh_fingerprint_is_deterministic_and_sensitive_to_edits(self):
+        snapshot = fan_snapshot()
+        base = self.adapter._mesh_fingerprint(
+            snapshot["points"], snapshot["faces"], snapshot["uv_sets"],
+            snapshot["materials"], snapshot["assignments"], snapshot["smoothing"])
+        again = self.adapter._mesh_fingerprint(
+            snapshot["points"], snapshot["faces"], snapshot["uv_sets"],
+            snapshot["materials"], snapshot["assignments"], snapshot["smoothing"])
+        self.assertEqual(base, again)
+        moved = list(snapshot["points"])
+        moved[0] = (moved[0][0] + 1e-4, moved[0][1], moved[0][2])
+        self.assertNotEqual(base, self.adapter._mesh_fingerprint(
+            moved, snapshot["faces"], snapshot["uv_sets"],
+            snapshot["materials"], snapshot["assignments"], snapshot["smoothing"]))
+        reassigned = list(snapshot["assignments"])
+        reassigned[0] = 1
+        self.assertNotEqual(base, self.adapter._mesh_fingerprint(
+            snapshot["points"], snapshot["faces"], snapshot["uv_sets"],
+            snapshot["materials"], reassigned, snapshot["smoothing"]))
+
+    def test_build_result_deletes_orphan_node_when_undo_is_disabled(self):
+        snapshot = fan_snapshot()
+        deleted = []
+        created = []
+
+        def create(**kwargs):
+            self.adapter._consume_mesh_payload(kwargs["key"])
+            created.append("|Orphan")
+            return "|Orphan"
+
+        def undo_info(**kwargs):
+            if kwargs.get("query") and kwargs.get("state"):
+                return False
+            return None
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.adapter, "snapshot_mesh", return_value=snapshot))
+            stack.enter_context(patch.object(self.adapter, "_write_materials", side_effect=RuntimeError("mat fail")))
+            stack.enter_context(patch.object(self.adapter, "_ensure_mesh_command", return_value="createFixture"))
+            stack.enter_context(patch.object(self.adapter.cmds, "createFixture", create, create=True))
+            stack.enter_context(patch.object(self.adapter.cmds, "undoInfo", undo_info, create=True))
+            stack.enter_context(patch.object(self.adapter.cmds, "undo", side_effect=AssertionError("undo disabled"), create=True))
+            stack.enter_context(patch.object(self.adapter.cmds, "objExists", lambda p: p == "|Orphan", create=True))
+            stack.enter_context(patch.object(self.adapter.cmds, "delete", deleted.append, create=True))
+            stack.enter_context(patch.object(self.adapter.cmds, "listRelatives",
+                                            return_value=["|Orphan|OrphanShape"], create=True))
+            with self.assertRaisesRegex(RuntimeError, "mat fail"):
+                self.adapter.build_result(snapshot, 10, _undo_chunk=True)
+        self.assertEqual(created, ["|Orphan"])
+        self.assertEqual(deleted, ["|Orphan"])
 
 
 class ReductionSessionTests(unittest.TestCase):

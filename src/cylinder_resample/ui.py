@@ -168,8 +168,22 @@ class Session:
             constraints.get("material_count", 0), constraints.get("hard_count", 0),
             "\n".join(details))
 
+    def _is_active_preview_snapshot(self, snapshot):
+        transform = snapshot.get("transform", "")
+        attr = transform + ".cylinderResamplePreview" if transform else None
+        if attr and cmds.objExists(attr) and bool(cmds.getAttr(attr)):
+            return True
+        shape = snapshot.get("shape", "")
+        for record in self._active_records():
+            node = self._handle_path(record["handle"])
+            if node and (node == transform or shape == node or shape.startswith(node + "|")):
+                return True
+        return False
+
     def read_selection(self):
         snapshot = adapter.selected_edge_loop()
+        if self._is_active_preview_snapshot(snapshot):
+            raise adapter.ToolError("不能直接分析当前预览模型，请先保留或取消预览，再选择原模型边环。")
         analysis = adapter.analyze(snapshot)
         constraints = adapter.analyze_constraints(snapshot, analysis, include_uvs=self._params()[2])
         self.cancel(silent=True)
@@ -179,7 +193,8 @@ class Session:
         self.source_handle = snapshot.get("shape_handle") or adapter.om.MObjectHandle(adapter._dag(snapshot["shape"]).node())
         self.source_baseline = bool(cmds.getAttr(adapter.live_shape(snapshot) + ".visibility"))
         cmds.intSliderGrp(self.controls["count"], edit=True, value=analysis["source_count"])
-        for key in ("preview", "region", "original", "half", "double"):
+        for key in ("preview", "region", "original", "half", "double",
+                    "preset_8", "preset_12", "preset_16", "preset_24", "preset_32"):
             if key in self.controls:
                 cmds.button(self.controls[key], edit=True, enable=True)
         self.message(self._summary())
@@ -192,6 +207,12 @@ class Session:
         if self.analysis:
             count = min(4096, max(3, int(round(self.analysis["source_count"] * factor))))
             cmds.intSliderGrp(self.controls["count"], edit=True, value=count)
+            self.params_changed()
+
+    def set_exact_count(self, count):
+        if self.analysis:
+            value = min(4096, max(3, int(count)))
+            cmds.intSliderGrp(self.controls["count"], edit=True, value=value)
             self.params_changed()
 
     def params_changed(self):
@@ -217,8 +238,12 @@ class Session:
             raise adapter.ToolError("请先分析圆周边环。")
         count, mode, keep_uv, keep_hard, uv_policy = self._params()
         with adapter.undo_chunk("CylinderResamplePreview"):
+            cached = (self._constraint_analysis
+                      if self._constraint_snapshot is self.snapshot
+                      and self._constraint_topology is self.analysis else None)
             built = adapter.build_result(self.snapshot, count, mode, keep_uv, keep_hard,
-                                         _undo_chunk=False, uv_policy=uv_policy)
+                                         _undo_chunk=False, uv_policy=uv_policy,
+                                         _analysis=self.analysis, _constraints=cached)
             self._restore_source()
             self._delete_preview()
             source = self._source_shape()
@@ -228,7 +253,7 @@ class Session:
             record = {"handle": adapter.om.MObjectHandle(adapter._dag(built["node"]).node()),
                       "source_handle": self.source_handle,
                       "baseline": bool(cmds.getAttr(source + ".visibility")),
-                      "snapshot": self.snapshot, "analysis": self.analysis, "offset": False, "pending": True}
+                      "offset": False, "pending": True}
             self.preview_records.append(record)
             cmds.setAttr(built["node"] + ".cylinderResamplePreview", True)
             if not self._can_set_visibility(source):
@@ -320,7 +345,8 @@ class Session:
         self.snapshot = self.analysis = self.source_handle = self.source_baseline = None
         self._constraint_analysis = self._constraint_snapshot = self._constraint_topology = None
         self._preview_controls(False)
-        for key in ("preview", "region", "original", "half", "double"):
+        for key in ("preview", "region", "original", "half", "double",
+                    "preset_8", "preset_12", "preset_16", "preset_24", "preset_32"):
             if cmds.control(self.controls.get(key, ""), exists=True):
                 cmds.button(self.controls[key], edit=True, enable=False)
         self.message("等待分析")
@@ -341,7 +367,7 @@ class Session:
 
     def make_window(self):
         year = ensure_supported()
-        cmds.window(WINDOW, title="圆柱重分段 {} | Maya {}".format(__version__, year), widthHeight=(480, 680), sizeable=True)
+        cmds.window(WINDOW, title="圆柱重分段 {} | Maya {}".format(__version__, year), widthHeight=(480, 725), sizeable=True)
         cmds.scrollLayout(childResizable=True)
         cmds.columnLayout(adjustableColumn=True, rowSpacing=10, columnAttach=("both", 12))
         cmds.separator(height=6, style="none")
@@ -361,6 +387,12 @@ class Session:
         for key, label, factor in (("original", "原段数", 1), ("half", "减半", 0.5), ("double", "加倍", 2)):
             self.controls[key] = cmds.button(label=label, enable=False, height=26,
                                               command=lambda *_, f=factor: self.run(lambda: self.set_count(f)))
+        cmds.setParent("..")
+        cmds.rowLayout(numberOfColumns=5, columnWidth5=(84, 84, 84, 84, 84), adjustableColumn=5)
+        for preset in (8, 12, 16, 24, 32):
+            self.controls["preset_{}".format(preset)] = cmds.button(
+                label="{} 段".format(preset), enable=False, height=24,
+                command=lambda *_, value=preset: self.run(lambda: self.set_exact_count(value)))
         cmds.setParent("..")
         self.controls["mode"] = cmds.radioButtonGrp(numberOfRadioButtons=3,
                                                      labelArray3=("保留原轮廓", "均匀重采样", "圆形拟合"),
@@ -387,7 +419,7 @@ class Session:
                                                   changeCommand=lambda *_: self.run(self.compare))
         self.controls["beside"] = cmds.checkBox(label="保留时并排放置", value=bool(self._preference("CylinderResampleBeside", 1)),
                                                  changeCommand=lambda *_: self.run(self.params_changed))
-        self.controls["status"] = cmds.scrollField(editable=False, wordWrap=True, height=115, text="等待分析",
+        self.controls["status"] = cmds.scrollField(editable=False, wordWrap=True, height=150, text="等待分析",
                                                    font="smallPlainLabelFont")
         cmds.rowLayout(numberOfColumns=2, adjustableColumn=1, columnWidth2=(300, 110), columnAttach2=("both", "both"))
         self.controls["keep"] = cmds.button(label="保留结果副本", height=32, enable=False,

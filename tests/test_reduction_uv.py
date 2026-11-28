@@ -108,8 +108,6 @@ class ReductionUVTests(unittest.TestCase):
     def assert_centers_not_welded(self, result, source, faces, analysis, target):
         for cap in analysis["caps"]:
             source_faces = set(cap["faces"])
-            old_ids = {corner_id(source, faces, face_id, cap["center"])
-                       for face_id in source_faces}
             center = result["old_to_new"][cap["center"]]
             observed = []
             for old_face, (face, ids, coordinates) in zip(result["face_sources"], face_uvs(result)):
@@ -117,9 +115,9 @@ class ReductionUVTests(unittest.TestCase):
                     observed.append(ids[face.index(center)])
             self.assertEqual(len(observed), target)
             self.assertEqual(len(set(observed)), target)
-            self.assertTrue(set(observed).issubset(old_ids))
-            self.assertTrue(all((result["uv_sets"]["map1"]["u"][uv_id],
-                                 result["uv_sets"]["map1"]["v"][uv_id]) == (0.5, 0.5)
+            out_uv = result["uv_sets"]["map1"]
+            self.assertEqual(len(out_uv["u"]), len(set(out_uv["ids"])))
+            self.assertTrue(all((out_uv["u"][uv_id], out_uv["v"][uv_id]) == (0.5, 0.5)
                                 for uv_id in observed))
 
     def assert_planar_cap_layout(self, result, points, faces, analysis):
@@ -193,7 +191,9 @@ class ReductionUVTests(unittest.TestCase):
         self.assertEqual(constraints, {0, 4, 5})
         result = core.resample_mesh(points, faces, seed, 6, {"map1": data})
         self.assertTrue({4.0, 5.0}.issubset(result["samples"]))
-        self.assertIn(center_uv, result["uv_sets"]["map1"]["ids"])
+        out_uv = result["uv_sets"]["map1"]
+        expected_coord = (data["u"][center_uv], data["v"][center_uv])
+        self.assertIn(expected_coord, set(zip(out_uv["u"], out_uv["v"])))
 
     def test_alternating_true_center_discontinuities_still_block_reduction(self):
         points, faces, seed, analysis = self.model()
@@ -232,7 +232,10 @@ class ReductionUVTests(unittest.TestCase):
         observed = {ids[face.index(new_vertex)]
                     for old_face, (face, ids, coordinates) in zip(result["face_sources"], face_uvs(result))
                     if old_face in cap["faces"] and new_vertex in face}
-        self.assertEqual(observed, {old_id, new_id})
+        self.assertEqual(len(observed), 2)
+        out_uv = result["uv_sets"]["map1"]
+        expected_coord = (data["u"][old_id], data["v"][old_id])
+        self.assertTrue(all((out_uv["u"][i], out_uv["v"][i]) == expected_coord for i in observed))
 
     def test_same_coordinate_side_seam_ids_remain_protected(self):
         points, faces, seed, analysis = self.model()

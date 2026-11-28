@@ -658,6 +658,95 @@ class MayaCompatibilityTests(unittest.TestCase):
                 with self.assertRaises(updater.UpdaterError):
                     updater._python_version(payload)
 
+    def test_universal_archive_name_is_accepted_by_check_and_install(self):
+        data, checked, files = self.broad_release()
+        universal_name = "CylinderResample_Maya2022-2027_v0.3.0.zip"
+        checked["archive_asset"] = dict(checked["archive_asset"], name=universal_name)
+        checked["manifest"] = copy.deepcopy(checked["manifest"])
+        checked["manifest"]["archive"]["name"] = universal_name
+        manifest_bytes = json_bytes(checked["manifest"])
+        manifest_asset = {
+            "name": "update-manifest.json", "size": len(manifest_bytes), "state": "uploaded",
+            "url": "https://api.github.com/repos/%s/releases/assets/124" % REPOSITORY,
+        }
+        metadata = {
+            "draft": False, "prerelease": False, "tag_name": "v0.3.0",
+            "html_url": "https://github.com/%s/releases/tag/v0.3.0" % REPOSITORY,
+            "body": "Universal asset fixture", "assets": [checked["archive_asset"], manifest_asset],
+        }
+        responses = {
+            "https://api.github.com/repos/%s/releases/latest" % REPOSITORY: json_bytes(metadata),
+            manifest_asset["url"]: manifest_bytes,
+            checked["archive_asset"]["url"]: data,
+        }
+        with patch.object(updater, "_request", side_effect=lambda url, *args: responses[url]):
+            found = updater.check_for_update("0.2.0", REPOSITORY, maya_version=2025)
+            self.assertTrue(found["available"])
+            self.assertEqual(found["archive_asset"]["name"], universal_name)
+            with tempfile.TemporaryDirectory() as directory:
+                target = installed_fixture(directory)
+                result = updater.install_release(found, target)
+                self.assertEqual(result["version"], "0.3.0")
+                self.assertEqual(tree_bytes(target), files)
+
+    def test_request_retries_transient_url_error_and_succeeds(self):
+        class OkResponse:
+            headers = {"Content-Length": "2"}
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def geturl(self):
+                return "https://api.github.com/fixture"
+            def read(self, size):
+                if not hasattr(self, "done"):
+                    self.done = True
+                    return b"ok"
+                return b""
+
+        calls = []
+        def open_side_effect(request, **kwargs):
+            calls.append(request)
+            if len(calls) == 1:
+                raise urllib.error.URLError("transient reset")
+            return OkResponse()
+
+        opener = unittest.mock.Mock()
+        opener.open.side_effect = open_side_effect
+        with patch.object(updater.urllib.request, "build_opener", return_value=opener), \
+                patch.object(updater, "_RETRY_DELAY", 0):
+            self.assertEqual(updater._request("https://api.github.com/fixture", 10), b"ok")
+        self.assertEqual(len(calls), 2)
+
+    def test_old_backups_are_pruned_while_retaining_recent_backups(self):
+        data, release, _ = self.broad_release()
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            target = installed_fixture(directory)
+            stale = []
+            for idx in range(4):
+                bdir = parent / ("cylinder_resample.backup-0.1.%d-aaaaaaaaaaaa" % idx)
+                bdir.mkdir()
+                (bdir / "__init__.py").write_text('__version__ = "0.1.%d"\n' % idx, encoding="utf-8")
+                os.utime(str(bdir), (1000 + idx, 1000 + idx))
+                stale.append(bdir)
+            with patch.object(updater, "_request", return_value=data):
+                result = updater.install_release(release, target, maya_version=2024)
+            remaining = sorted(p.name for p in parent.glob("cylinder_resample.backup-*"))
+            self.assertEqual(len(remaining), updater._MAX_BACKUPS)
+            self.assertIn(Path(result["backup_dir"]).name, remaining)
+            self.assertFalse(stale[0].exists())
+            self.assertFalse(stale[1].exists())
+
+    def test_lock_error_reports_lock_file_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / ".cylinder_resample-update.lock"
+            lock.write_bytes(b"busy")
+            with self.assertRaises(updater.UpdaterError) as caught:
+                with updater._update_lock(Path(directory)):
+                    pass
+            self.assertIn(str(lock), str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

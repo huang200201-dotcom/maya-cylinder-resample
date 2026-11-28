@@ -3,7 +3,7 @@
 import math
 from bisect import bisect_right
 
-from .spacing import analyze_spacing
+from .spacing import analyze_spacing, find_common_compatible_counts
 from .uv_transfer import RegionUVSampler, fixed_columns, plan_uv_reduction, region_boundaries
 
 from .topology import ResampleError, _edge, _edge_direction, analyze_mesh
@@ -114,7 +114,7 @@ def _samples(n, target, protected, lengths=None, keep_identity=True):
 
 
 def _sub(a, b):
-    return tuple(x - y for x, y in zip(a, b))
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
 
 
 def _remap_ring_samples(samples, protected, source_lengths, ring_lengths):
@@ -166,19 +166,16 @@ def _remap_ring_samples(samples, protected, source_lengths, ring_lengths):
 
 def _norm(values):
     # Two-argument hypot is available in Maya 2022's Python 3.7 and stays scaled.
-    length = 0.0
-    for value in values:
-        length = math.hypot(length, value)
-    return length
+    return math.hypot(math.hypot(values[0], values[1]), values[2])
 
 
 def _distance(a, b):
-    return _norm(_sub(a, b))
+    return math.hypot(math.hypot(a[0] - b[0], a[1] - b[1]), a[2] - b[2])
 
 
 def _ring_lengths(ring_points):
-    lengths = [_distance(point, ring_points[(i + 1) % len(ring_points)])
-               for i, point in enumerate(ring_points)]
+    n = len(ring_points)
+    lengths = [_distance(ring_points[i], ring_points[(i + 1) % n]) for i in range(n)]
     longest = max(lengths)
     if not math.isfinite(longest) or longest == 0.0 or min(lengths) <= longest * 1.0e-12:
         raise ResampleError("圆周环包含重合顶点或零长度边，请先修复模型。")
@@ -186,26 +183,38 @@ def _ring_lengths(ring_points):
 
 
 def _polyline_point(source, t):
-    index, fraction = int(math.floor(t)) % len(source), t - math.floor(t)
-    return tuple(source[index][j] * (1.0 - fraction) + source[(index + 1) % len(source)][j] * fraction
-                 for j in range(3))
+    floored = math.floor(t)
+    index = int(floored) % len(source)
+    fraction = t - floored
+    p0 = source[index]
+    p1 = source[(index + 1) % len(source)]
+    one_minus = 1.0 - fraction
+    return (p0[0] * one_minus + p1[0] * fraction,
+            p0[1] * one_minus + p1[1] * fraction,
+            p0[2] * one_minus + p1[2] * fraction)
 
 
 def _valid_face(face, points):
-    local = [_sub(points[vertex], points[face[0]]) for vertex in face]
-    scale = max(_norm(point) for point in local)
+    p0 = points[face[0]]
+    p0x, p0y, p0z = p0[0], p0[1], p0[2]
+    local = [(points[v][0] - p0x, points[v][1] - p0y, points[v][2] - p0z) for v in face]
+    scale = max(math.hypot(math.hypot(x, y), z) for x, y, z in local)
     if not math.isfinite(scale) or scale == 0.0:
         return False
-    local = [tuple(value / scale for value in point) for point in local]
-    normal = [0.0, 0.0, 0.0]
-    for i, point in enumerate(local):
-        cross = _cross(point, local[(i + 1) % len(local)])
-        normal = [a + b for a, b in zip(normal, cross)]
-    return _norm(normal) > 1.0e-14
+    scaled = [(x / scale, y / scale, z / scale) for x, y, z in local]
+    nx = ny = nz = 0.0
+    m = len(scaled)
+    for i in range(m):
+        ax, ay, az = scaled[i]
+        bx, by, bz = scaled[(i + 1) % m]
+        nx += ay * bz - az * by
+        ny += az * bx - ax * bz
+        nz += ax * by - ay * bx
+    return math.hypot(math.hypot(nx, ny), nz) > 1.0e-14
 
 
 def _dot(a, b):
-    return sum(x * y for x, y in zip(a, b))
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
 def _cross(a, b):
@@ -216,7 +225,7 @@ def _unit(value):
     length = _norm(value)
     if length < _EPS:
         raise ResampleError("有圆周环退化，无法拟合圆形。")
-    return tuple(x / length for x in value)
+    return (value[0] / length, value[1] / length, value[2] / length)
 
 
 def _solve(matrix, values):
@@ -237,43 +246,73 @@ def _solve(matrix, values):
 
 def _circle_sampler(ring_points, return_deltas=False):
     n = len(ring_points)
-    origin = tuple(sum(point[j] for point in ring_points) / n for j in range(3))
+    origin = (math.fsum(p[0] for p in ring_points) / n,
+              math.fsum(p[1] for p in ring_points) / n,
+              math.fsum(p[2] for p in ring_points) / n)
     scale = max(_distance(point, origin) for point in ring_points)
     if not math.isfinite(scale) or scale == 0.0:
         raise ResampleError("有圆周环退化，无法拟合圆形。")
-    local = [tuple(value / scale for value in _sub(point, origin)) for point in ring_points]
-    normal = [0.0, 0.0, 0.0]
-    for i, point in enumerate(local):
-        cross = _cross(point, local[(i + 1) % n])
-        normal = [a + b for a, b in zip(normal, cross)]
-    normal = _unit(normal)
-    first = local[0]
-    axis_x = _unit(tuple(first[j] - normal[j] * _dot(first, normal) for j in range(3)))
+    ox, oy, oz = origin
+    local = [((p[0] - ox) / scale, (p[1] - oy) / scale, (p[2] - oz) / scale)
+             for p in ring_points]
+    nx = ny = nz = 0.0
+    for i in range(n):
+        ax, ay, az = local[i]
+        bx, by, bz = local[(i + 1) % n]
+        nx += ay * bz - az * by
+        ny += az * bx - ax * bz
+        nz += ax * by - ay * bx
+    normal = _unit((nx, ny, nz))
+    # Pick the vertex with largest in-plane projection to avoid degenerate axis_x.
+    best_proj = None
+    best_len = -1.0
+    for pt in local:
+        dn = _dot(pt, normal)
+        proj = (pt[0] - normal[0] * dn, pt[1] - normal[1] * dn, pt[2] - normal[2] * dn)
+        plen = _norm(proj)
+        if plen > best_len:
+            best_len = plen
+            best_proj = proj
+    axis_x = _unit(best_proj)
     axis_y = _cross(normal, axis_x)
     xy = [(_dot(point, axis_x), _dot(point, axis_y)) for point in local]
-    # Fit the circle in its own plane so translated, tilted rings work equally.
+    # Weight each sample by adjacent chord lengths so clustered vertices do not bias the fit.
+    chords = [math.hypot(xy[(i + 1) % n][0] - xy[i][0], xy[(i + 1) % n][1] - xy[i][1]) for i in range(n)]
+    weights = [0.5 * (chords[(i - 1) % n] + chords[i]) for i in range(n)]
     rows = [(x, y, 1.0) for x, y in xy]
-    matrix = [[sum(row[i] * row[j] for row in rows) for j in range(3)] for i in range(3)]
-    values = [sum(row[i] * (x * x + y * y) for row, (x, y) in zip(rows, xy)) for i in range(3)]
+    matrix = [[math.fsum(w * row[i] * row[j] for w, row in zip(weights, rows)) for j in range(3)] for i in range(3)]
+    values = [math.fsum(w * row[i] * (x * x + y * y) for w, row, (x, y) in zip(weights, rows, xy)) for i in range(3)]
     a, b, c = _solve(matrix, values)
     cx, cy = a / 2.0, b / 2.0
     radius_squared = c + cx * cx + cy * cy
     if radius_squared <= _EPS:
         raise ResampleError("有圆周环半径无效，无法拟合圆形。")
     radius = math.sqrt(radius_squared)
-    if max(abs(math.hypot(x - cx, y - cy) - radius) for x, y in xy) > radius * 0.025:
-        raise ResampleError("拟合圆形模式要求各圈接近圆形，半径偏差需小于 2.5%。请使用保留轮廓模式。")
-    if max(abs(_dot(point, normal)) for point in local) > radius * 0.01:
-        raise ResampleError("拟合圆形模式要求各圈近似共面，离面偏差需小于半径的 1%。请使用保留轮廓模式。")
+    radial_dev = max(abs(math.hypot(x - cx, y - cy) - radius) for x, y in xy) / radius
+    if radial_dev > 0.025:
+        raise ResampleError(
+            "拟合圆形模式要求各圈接近圆形，半径偏差需小于 2.5%（当前最大 {:.2f}%）。请使用保留轮廓模式。".format(
+                radial_dev * 100.0))
+    plane_dev = max(abs(_dot(point, normal)) for point in local) / radius
+    if plane_dev > 0.01:
+        raise ResampleError(
+            "拟合圆形模式要求各圈近似共面，离面偏差需小于半径的 1%（当前最大 {:.2f}%）。请使用保留轮廓模式。".format(
+                plane_dev * 100.0))
     angles = [math.atan2(y - cy, x - cx) for x, y in xy]
     deltas = [math.atan2(math.sin(angles[(i + 1) % n] - value), math.cos(angles[(i + 1) % n] - value)) for i, value in enumerate(angles)]
     if any(value <= _EPS for value in deltas) or abs(sum(deltas) - 2.0 * math.pi) > 0.01:
         raise ResampleError("拟合圆形模式需要顶点依次排列的完整圆周环。")
+    ax_x, ax_y, ax_z = axis_x
+    ay_x, ay_y, ay_z = axis_y
     def sample(t):
-        i = int(math.floor(t)) % n
-        angle = angles[i] + deltas[i] * (t - math.floor(t))
-        x, y = cx + radius * math.cos(angle), cy + radius * math.sin(angle)
-        return tuple(origin[j] + scale * (axis_x[j] * x + axis_y[j] * y) for j in range(3))
+        floored = math.floor(t)
+        i = int(floored) % n
+        angle = angles[i] + deltas[i] * (t - floored)
+        x = cx + radius * math.cos(angle)
+        y = cy + radius * math.sin(angle)
+        return (ox + scale * (ax_x * x + ay_x * y),
+                oy + scale * (ax_y * x + ay_y * y),
+                oz + scale * (ax_z * x + ay_z * y))
     return (sample, deltas) if return_deltas else sample
 
 
@@ -471,33 +510,21 @@ def resample_mesh(points, faces, seed_edges, target_count, uv_sets=None,
         pin_indices = [positions[float(pin)] for pin in pins]
         shared_counts = tuple((pin_indices[(i + 1) % len(pins)] - index) % target or target
                               for i, index in enumerate(pin_indices))
-        seed_constraints = analyze_spacing(lengths, pins, target)
+        fraction_sets = []
         for ri, ring_spacing in enumerate(per_ring_spacing):
-            details = seed_constraints if ri == seed_index else analyze_spacing(
+            details = analyze_spacing(
                 circle_lengths[ri], pins, target, find_compatible_counts=False)
+            fraction_sets.append(details["interval_fractions"])
             limited = any(abs(ideal - actual) > 1.0e-7 for ideal, actual in zip(
                 details["ideal_interval_counts"], shared_counts))
             ring_spacing.update({"spacing_limited_by_constraints": limited,
                                  "interval_fractions": details["interval_fractions"],
                                  "ideal_interval_counts": details["ideal_interval_counts"],
                                  "actual_interval_counts": shared_counts})
-        compatible_counts = []
-        for candidate in seed_constraints["compatible_counts"]:
-            seed_candidate = analyze_spacing(lengths, pins, candidate, find_compatible_counts=False)
-            compatible = True
-            for ri in range(len(new_rings)):
-                if ri == seed_index:
-                    continue
-                details = analyze_spacing(circle_lengths[ri], pins, candidate, find_compatible_counts=False)
-                if not details["compatible"] or any(abs(a - b) > 1.0e-7 for a, b in zip(
-                        details["ideal_interval_counts"], seed_candidate["ideal_interval_counts"])):
-                    compatible = False
-                    break
-            if compatible:
-                compatible_counts.append(candidate)
+        compatible_counts = find_common_compatible_counts(fraction_sets, target, len(pins))
         stats.update({"spacing_limited_by_constraints": any(
             ring_spacing["spacing_limited_by_constraints"] for ring_spacing in per_ring_spacing),
-                      "compatible_counts": tuple(compatible_counts)})
+                      "compatible_counts": compatible_counts})
     else:
         stats.update({"spacing_limited_by_constraints": False, "compatible_counts": ()})
     warnings = []
@@ -525,8 +552,22 @@ def resample_mesh(points, faces, seed_edges, target_count, uv_sets=None,
         warnings.append("UV 接缝、材质边界或硬边会固定采样列，约束区间的整数分段可能限制间距均匀程度。")
     if preserve_uvs and analysis["caps"] and not transfer:
         warnings.append("端盖的 UV 边界和分岛已保留，内部插值可能随拓扑变化。")
+    compact_uvs = {}
+    for name, data in uv_data.items():
+        remap = {}
+        new_u, new_v, new_ids = [], [], []
+        src_u, src_v = data["u"], data["v"]
+        for uv_id in data["ids"]:
+            mapped = remap.get(uv_id)
+            if mapped is None:
+                mapped = len(new_u)
+                remap[uv_id] = mapped
+                new_u.append(src_u[uv_id])
+                new_v.append(src_v[uv_id])
+            new_ids.append(mapped)
+        compact_uvs[name] = {"u": new_u, "v": new_v, "counts": data["counts"], "ids": new_ids}
     return {"points": new_points, "faces": new_faces,
-            "uv_sets": {name: {key: data[key] for key in ("u", "v", "counts", "ids")} for name, data in uv_data.items()},
+            "uv_sets": compact_uvs,
             "face_sources": face_sources, "analysis": analysis, "samples": samples,
             "ring_samples": ring_samples,
             "new_rings": new_rings, "old_to_new": old_to_new,

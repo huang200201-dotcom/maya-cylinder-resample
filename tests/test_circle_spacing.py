@@ -238,6 +238,33 @@ class CircleSpacingTests(unittest.TestCase):
         self.assertEqual(result["stats"]["compatible_counts"], ())
         self.assertGreater(result["stats"]["worst_spacing_ratio"], 1.8)
 
+    def test_circle_fit_reports_measured_deviation_percentage_when_rejected(self):
+        points, faces, seed = cylinder(n=12)
+        points[0] = (points[0][0] * 1.06, points[0][1] * 1.06, points[0][2])
+        with self.assertRaisesRegex(core.ResampleError, r"当前最大 \d+\.\d+%"):
+            core.resample_mesh(points, faces, seed, 16, shape_mode="circle", preserve_uvs=False)
+
+    def test_weighted_circle_fit_resists_clustered_vertex_bias(self):
+        # 8 clustered points on one side (slightly perturbed) + 4 sparse clean points on the opposite side.
+        angles = (0, 5, 10, 15, 20, 25, 30, 35, 100, 170, 240, 300)
+        profile = ((1.0, 0.0), (1.0, 2.0))
+        points, faces, seed = cylinder(n=len(angles), profile=profile)
+        for r_idx, (radius, height) in enumerate(profile):
+            for i, deg in enumerate(angles):
+                rad = math.radians(deg)
+                r = radius * (1.008 if i < 8 else 1.0)
+                points[r_idx * len(angles) + i] = (r * math.cos(rad), r * math.sin(rad), height)
+        result = core.resample_mesh(points, faces, seed, 16, shape_mode="circle", preserve_uvs=False)
+        for pt in output_ring(result, 0):
+            self.assertAlmostEqual(math.hypot(pt[0], pt[1]), 1.0, delta=0.01)
+
+    def test_common_compatible_counts_deduplicates_and_matches_all_rings(self):
+        from cylinder_resample.spacing import find_common_compatible_counts
+        # Ring A and Ring B share fractions (0.25, 0.75) with tiny noise.
+        counts = find_common_compatible_counts(
+            [(0.25, 0.75), (0.25, 0.75), (0.25 + 1e-11, 0.75 - 1e-11)], target=9, pin_count=2)
+        self.assertEqual(counts, (8, 12))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,11 +1,13 @@
 """Maya integration. All geometry edits create a separate result object."""
 
+from array import array
 import hashlib
-import json
 import math
 import os
 import re
+import struct
 import tempfile
+import uuid
 from collections import defaultdict, namedtuple
 from contextlib import contextmanager
 
@@ -18,6 +20,66 @@ from . import material_uv_links
 
 class ToolError(ValueError):
     pass
+
+
+_MESH_PAYLOADS = {}
+
+
+@contextmanager
+def _stage_mesh_payload(payload):
+    token = uuid.uuid4().hex
+    _MESH_PAYLOADS[token] = payload
+    try:
+        yield token
+    finally:
+        _MESH_PAYLOADS.pop(token, None)
+
+
+def _consume_mesh_payload(token):
+    if token not in _MESH_PAYLOADS:
+        raise RuntimeError("网格创建数据已失效，请重新生成预览。")
+    return _MESH_PAYLOADS.pop(token)
+
+
+def _mesh_fingerprint(points, faces, uv_sets, materials, assignments, shading):
+    """Hash geometry, UVs, materials, and smoothing incrementally without JSON."""
+    hasher = hashlib.sha256()
+    hasher.update(struct.pack("<II", len(points), len(faces)))
+    coords = array("d")
+    for pt in points:
+        coords.extend(pt)
+    hasher.update(coords.tobytes())
+    face_counts = array("i", (len(face) for face in faces))
+    face_verts = array("i")
+    for face in faces:
+        face_verts.extend(face)
+    hasher.update(face_counts.tobytes())
+    hasher.update(face_verts.tobytes())
+    hasher.update(struct.pack("<I", len(uv_sets)))
+    for name in sorted(uv_sets):
+        data = uv_sets[name]
+        encoded = name.encode("utf-8")
+        hasher.update(struct.pack("<IIII", len(encoded), len(data["u"]),
+                                  len(data["counts"]), len(data["ids"])))
+        hasher.update(encoded)
+        hasher.update(array("d", data["u"]).tobytes())
+        hasher.update(array("d", data["v"]).tobytes())
+        hasher.update(array("i", data["counts"]).tobytes())
+        hasher.update(array("i", data["ids"]).tobytes())
+    hasher.update(struct.pack("<II", len(materials), len(assignments)))
+    for material in materials:
+        encoded = material.encode("utf-8")
+        hasher.update(struct.pack("<I", len(encoded)))
+        hasher.update(encoded)
+    hasher.update(array("i", assignments).tobytes())
+    hard_edges = sorted(pair for pair, is_smooth in shading.items() if not is_smooth)
+    hasher.update(struct.pack("<II", len(shading), len(hard_edges)))
+    flat_hard = array("i")
+    for a, b in hard_edges:
+        flat_hard.append(a)
+        flat_hard.append(b)
+    hasher.update(flat_hard.tobytes())
+    return hasher.hexdigest()
 
 
 ConstraintBand = namedtuple("ConstraintBand", "rings uv_by_set material_columns hard_columns")
@@ -94,8 +156,9 @@ def snapshot_mesh(shape, seed_edges):
         uv_sets[name] = {"u": list(u), "v": list(v), "counts": list(uv_counts), "ids": list(ids)}
     default_uv_set = next(iter(uv_sets), None)
     if len(uv_sets) > 1:
-        slots = cmds.polyUVSet(shape, query=True, allUVSetsIndices=True)
-        default_uv_set = cmds.getAttr("{}.uvSet[{}].uvSetName".format(shape, min(slots)))
+        slots = cmds.polyUVSet(shape, query=True, allUVSetsIndices=True) or []
+        if slots:
+            default_uv_set = cmds.getAttr("{}.uvSet[{}].uvSetName".format(shape, min(slots)))
     materials, assignments = _shader_table(mesh, dag.instanceNumber())
     shading = {}
     for edge in range(mesh.numEdges):
@@ -104,10 +167,7 @@ def snapshot_mesh(shape, seed_edges):
     transform_dag = om.MDagPath(dag)
     transform_dag.pop()
     transform = transform_dag.fullPathName()
-    payload = {"points": points, "faces": faces, "uv_sets": uv_sets,
-               "materials": materials, "assignments": list(assignments),
-               "smoothing": sorted((list(pair), value) for pair, value in shading.items())}
-    fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    fingerprint = _mesh_fingerprint(points, faces, uv_sets, materials, assignments, shading)
     warnings = []
     if mesh.getColorSetNames():
         warnings.append("原模型带顶点色；当前版本结果不传递顶点色。")
@@ -116,10 +176,14 @@ def snapshot_mesh(shape, seed_edges):
     history = cmds.listHistory(shape, pruneDagObjects=True) or []
     if any(cmds.nodeType(node) in ("skinCluster", "blendShape", "wrap", "ffd") for node in history):
         warnings.append("原模型带变形器；结果是当前姿态的静态副本。")
+    rotate_pivot = cmds.xform(transform, query=True, objectSpace=True, rotatePivot=True)
+    scale_pivot = cmds.xform(transform, query=True, objectSpace=True, scalePivot=True)
     return {"shape": shape, "transform": transform, "points": points, "faces": faces,
             "seed_edges": list(seed_edges), "uv_sets": uv_sets, "materials": materials,
             "assignments": list(assignments), "smoothing": shading,
             "matrix": cmds.xform(transform, query=True, worldSpace=True, matrix=True),
+            "rotate_pivot": list(rotate_pivot) if rotate_pivot else None,
+            "scale_pivot": list(scale_pivot) if scale_pivot else None,
             "metric_points": [tuple(point)[:3] for point in mesh.getPoints(om.MSpace.kWorld)],
             "shape_handle": om.MObjectHandle(dag.node()), "instance_number": dag.instanceNumber(),
             "current_uv_set": mesh.currentUVSetName(dag.instanceNumber()),
@@ -270,9 +334,10 @@ def constraint_summary(snapshot, analysis, preserve_uvs=True, preserve_hard_edge
             "uv_set_counts": tuple((name, len(columns)) for name, columns in uv_by_set)}
 
 
-def _constraint_message(snapshot, analysis, target_count, preserve_uvs, preserve_hard_edges, uv_policy="strict"):
+def _constraint_message(snapshot, analysis, target_count, preserve_uvs, preserve_hard_edges,
+                        uv_policy="strict", constraints=None):
     summary = constraint_summary(snapshot, analysis, preserve_uvs, preserve_hard_edges,
-                                 uv_policy=uv_policy, target_count=target_count)
+                                 constraints=constraints, uv_policy=uv_policy, target_count=target_count)
     message = ("目标 {} 段低于当前保护所需的 {} 段。\n"
                "UV 接缝：{} 列；材质边界：{} 列；硬边：{} 列（可重叠）。").format(
         target_count, summary["minimum_count"], summary["uv_count"],
@@ -434,12 +499,23 @@ def _ensure_mesh_command():
 
 
 def build_result(snapshot, target_count, shape_mode="contour", preserve_uvs=True,
-                 preserve_hard_edges=True, name=None, _undo_chunk=True, uv_policy="strict"):
+                 preserve_hard_edges=True, name=None, _undo_chunk=True, uv_policy="strict",
+                 _analysis=None, _constraints=None):
     current = snapshot_mesh(live_shape(snapshot), snapshot["seed_edges"])
     if current["fingerprint"] != snapshot["fingerprint"]:
         raise ToolError("模型在分析后发生了变化，请重新分析圆周边环。")
-    analysis = analyze(current)
-    protected = _protected_columns(current, analysis, preserve_hard_edges)
+    analysis = _analysis if _analysis is not None else analyze(current)
+    usable_cache = (isinstance(_constraints, ConstraintAnalysis)
+                    and _constraints.snapshot is snapshot
+                    and _constraints.analysis is analysis
+                    and _constraints.fingerprint == current["fingerprint"])
+    summary_snapshot = snapshot if usable_cache else current
+    cached_constraints = _constraints if usable_cache else None
+    if usable_cache:
+        protected = sorted(_constraints.material_columns | (
+            _constraints.hard_columns if preserve_hard_edges else frozenset()))
+    else:
+        protected = _protected_columns(current, analysis, preserve_hard_edges)
     try:
         result = core.resample_mesh(current["points"], current["faces"], current["seed_edges"],
                                     target_count, uv_sets=current["uv_sets"], shape_mode=shape_mode,
@@ -447,11 +523,13 @@ def build_result(snapshot, target_count, shape_mode="contour", preserve_uvs=True
                                     metric_points=current["metric_points"], _analysis=analysis, uv_policy=uv_policy,
                                     preferred_uv_set=current["current_uv_set"])
     except core.ConstraintError as error:
-        raise ToolError(_constraint_message(current, analysis, target_count, preserve_uvs,
-                                            preserve_hard_edges, uv_policy)) from error
+        raise ToolError(_constraint_message(summary_snapshot, analysis, target_count, preserve_uvs,
+                                            preserve_hard_edges, uv_policy,
+                                            constraints=cached_constraints)) from error
     if result.get("stats", {}).get("spacing_limited_by_constraints"):
-        summary = constraint_summary(current, analysis, preserve_uvs, preserve_hard_edges,
-                                     uv_policy=uv_policy, target_count=target_count)
+        summary = constraint_summary(summary_snapshot, analysis, preserve_uvs, preserve_hard_edges,
+                                     constraints=cached_constraints, uv_policy=uv_policy,
+                                     target_count=target_count)
         fixed_uv = summary["uv_count"] - result["stats"].get("relaxed_uv_count", 0)
         result["warnings"].append(
             "间距约束来源：UV 接缝 {} 列、材质边界 {} 列、硬边 {} 列（可重叠）。".format(
@@ -460,14 +538,16 @@ def build_result(snapshot, target_count, shape_mode="contour", preserve_uvs=True
     create_command = _ensure_mesh_command()
     smoothing = _edge_smoothing(current, result, preserve_hard_edges)
     data = {"points": result["points"], "faces": result["faces"], "uv_sets": result["uv_sets"],
-            "smoothing": [[list(pair), value] for pair, value in smoothing.items()],
+            "smoothing": [[list(pair), False] for pair, value in smoothing.items() if not value],
             "name": name or leaf + "_resampled#", "matrix": current["matrix"],
+            "rotate_pivot": current.get("rotate_pivot"), "scale_pivot": current.get("scale_pivot"),
             "current_uv_set": current["current_uv_set"], "default_uv_set": current.get("default_uv_set")}
     node = None
     if _undo_chunk:
         cmds.undoInfo(openChunk=True, chunkName="CylinderResample")
     try:
-        node = getattr(cmds, create_command)(data=json.dumps(data, separators=(",", ":")))
+        with _stage_mesh_payload(data) as token:
+            node = getattr(cmds, create_command)(key=token)
         output_shape = cmds.listRelatives(node, shapes=True, fullPath=True)[0]
         groups = _write_materials(node, output_shape, current, result["face_sources"])
         if len(result["uv_sets"]) > 1 and groups:
@@ -485,7 +565,18 @@ def build_result(snapshot, target_count, shape_mode="contour", preserve_uvs=True
         if _undo_chunk:
             cmds.undoInfo(closeChunk=True)
             if node:
-                cmds.undo()
+                undo_enabled = True
+                try:
+                    undo_enabled = bool(cmds.undoInfo(query=True, state=True))
+                except Exception:
+                    undo_enabled = True
+                if undo_enabled:
+                    try:
+                        cmds.undo()
+                    except Exception:
+                        pass
+                if cmds.objExists(node):
+                    cmds.delete(node)
         elif node and cmds.objExists(node):
             cmds.delete(node)
         raise

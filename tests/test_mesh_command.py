@@ -139,10 +139,44 @@ class MeshPluginLoaderTests(unittest.TestCase):
         self.assertIsInstance(command, command_type)
         self.assertTrue(command.isUndoable())
 
-    def test_command_syntax_accepts_the_json_data_string(self):
+    def test_command_syntax_accepts_the_json_data_string_and_handoff_key(self):
         namespace = load_plugin()
         syntax = namespace["CreateMeshCommand"].syntax_creator()
-        self.assertEqual(syntax.flags, [("-d", "-data", FakeSyntax.kString)])
+        self.assertEqual(syntax.flags, [
+            ("-d", "-data", FakeSyntax.kString),
+            ("-k", "-key", FakeSyntax.kString),
+        ])
+
+    def test_load_payload_supports_in_process_key_handoff_and_legacy_json(self):
+        namespace = load_plugin()
+        staged = {}
+
+        def consume(key):
+            if key not in staged:
+                raise RuntimeError("expired")
+            return staged.pop(key)
+
+        fake_adapter = types.SimpleNamespace(_consume_mesh_payload=consume)
+
+        class FakeDB:
+            def __init__(self, flags):
+                self.flags = flags
+
+            def isFlagSet(self, flag):
+                return flag in self.flags
+
+            def flagArgumentString(self, flag, index):
+                return self.flags[flag]
+
+        staged["tok1"] = {"name": "from_key"}
+        with patch.dict(sys.modules, {"cylinder_resample.adapter": fake_adapter}):
+            self.assertEqual(namespace["_load_payload"](FakeDB({"-key": "tok1"})), {"name": "from_key"})
+            with self.assertRaises(RuntimeError):
+                namespace["_load_payload"](FakeDB({"-key": "tok1"}))
+        self.assertEqual(namespace["_load_payload"](FakeDB({"-data": '{"name":"from_json"}'})),
+                         {"name": "from_json"})
+        with self.assertRaises(RuntimeError):
+            namespace["_load_payload"](FakeDB({}))
 
     def test_adapter_cached_source_registers_the_requested_command_without_file(self):
         maya = types.ModuleType("maya")

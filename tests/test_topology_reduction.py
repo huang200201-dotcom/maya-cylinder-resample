@@ -113,7 +113,12 @@ class ClosedTopologyTests(unittest.TestCase):
         self.assertEqual(result["face_sources"][:3], list(range(first, first + 3)))
         for old_face, rebuilt in zip(other, result["faces"]):
             self.assertEqual([points[i] for i in old_face], [result["points"][i] for i in rebuilt])
-        self.assertEqual(result["uv_sets"]["map1"]["ids"][:9], list(range(first_uv, first_uv + 9)))
+        result_uv = result["uv_sets"]["map1"]
+        expected_coords = [(uv["u"][i], uv["v"][i]) for i in range(first_uv, first_uv + 9)]
+        actual_coords = [(result_uv["u"][i], result_uv["v"][i]) for i in result_uv["ids"][:9]]
+        self.assertEqual(actual_coords, expected_coords)
+        self.assertEqual(len(set(result_uv["ids"][:9])), 9)
+        self.assertEqual(len(result_uv["u"]), len(set(result_uv["ids"])))
         with self.assertRaisesRegex(core.ResampleError, "非流形边"):
             core.analyze_mesh(points, faces, [(start, start + 1), (start + 1, start + 2), (start + 2, start)])
 

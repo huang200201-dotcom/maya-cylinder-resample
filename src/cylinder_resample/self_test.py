@@ -11,6 +11,7 @@ def run():
     year = ensure_supported()
     selection = om.MGlobal.getActiveSelectionList()
     created = []
+    extra_nodes = []
     try:
         source = cmds.polyCylinder(name="CR_CompatibilityTest#", radius=1.0, height=3.0,
                                    subdivisionsAxis=16, subdivisionsHeight=3,
@@ -26,6 +27,12 @@ def run():
         mesh.setPoints(points)
         cmds.polyUVSet(shape, copy=True, uvSet="map1", newUVSet="CR_texture")
         cmds.polyUVSet(shape, currentUVSet=True, uvSet="CR_texture")
+        shader = cmds.shadingNode("lambert", asShader=True, name="CR_SelfTestMat#")
+        extra_nodes.append(shader)
+        sg = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name="CR_SelfTestSG#")
+        extra_nodes.append(sg)
+        cmds.connectAttr(shader + ".outColor", sg + ".surfaceShader", force=True)
+        cmds.sets("{}.f[0:7]".format(source), edit=True, forceElement=sg)
         seed = []
         minimum = min(point.y for point in points)
         for edge in range(mesh.numEdges):
@@ -33,8 +40,9 @@ def run():
             if abs(points[a].y - minimum) < 1e-7 and abs(points[b].y - minimum) < 1e-7:
                 seed.append((a, b))
         snapshot = adapter.snapshot_mesh(shape, seed)
-        for mode, target in (("contour", 24), ("uniform", 20), ("circle", 12), ("circle", 24)):
-            built = adapter.build_result(snapshot, target, shape_mode=mode)
+        for mode, target, policy in (("contour", 24, "strict"), ("uniform", 20, "strict"),
+                                     ("circle", 12, "adaptive"), ("circle", 24, "strict")):
+            built = adapter.build_result(snapshot, target, shape_mode=mode, uv_policy=policy)
             node = built["node"]
             created.append(om.MObjectHandle(adapter._dag(node).node()))
             output_shape = cmds.listRelatives(node, shapes=True, fullPath=True)[0]
@@ -54,13 +62,24 @@ def run():
                 if sorted(pieces) != [1] * 8 + [2] * 8 or any(
                         pieces[index] == pieces[(index + 1) % 16] for index in range(16)):
                     raise RuntimeError("自检发现新增段数分布异常。")
+        if cmds.undoInfo(query=True, state=True):
+            last_node = built["node"]
+            cmds.undo()
+            if cmds.objExists(last_node):
+                raise RuntimeError("自检发现 Undo 未撤销结果网格。")
+            cmds.redo()
+            if not cmds.objExists(last_node):
+                raise RuntimeError("自检发现 Redo 未恢复结果网格。")
         if adapter.snapshot_mesh(shape, seed)["fingerprint"] != snapshot["fingerprint"]:
             raise RuntimeError("自检发现源模型发生了变化。")
-        message = "Maya {} 兼容自检通过：三种重分段模式、均衡分布、UV 读写与当前 UV 集、源网格保留。".format(year)
+        message = "Maya {} 兼容自检通过：三种重分段模式、逐面材质、UV 读写、Undo/Redo 与源网格保留。".format(year)
         print(message)
         return message
     finally:
         for handle in reversed(created):
             if handle.isValid() and handle.isAlive():
                 cmds.delete(om.MFnDagNode(handle.object()).fullPathName())
+        for node in reversed(extra_nodes):
+            if cmds.objExists(node):
+                cmds.delete(node)
         om.MGlobal.setActiveSelectionList(selection)

@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-2022]
-        python: ['3.7', '3.9', '3.10', '3.11', '3.13']
+        python: ['3.7', '3.9', '3.10', '3.11', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -43,6 +43,27 @@ jobs:
         run: python -B tools/build_release.py --check-tag "$RELEASE_TAG" --output-dir dist
       - name: Verify release artifacts
         run: python -B tools/build_release.py --verify-only --output-dir dist
+      - name: Extract release notes for current version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python -B - <<'PY'
+          import os, re
+          from pathlib import Path
+
+          version = os.environ["RELEASE_TAG"].lstrip("v")
+          text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          pattern = re.compile(r"^##\s+" + re.escape(version) + r"\s*$", re.MULTILINE)
+          match = pattern.search(text)
+          if match:
+              rest = text[match.start():]
+              next_section = re.search(r"^##\s+", rest[match.end() - match.start():], re.MULTILINE)
+              section = rest[:match.end() - match.start() + next_section.start()] if next_section else rest
+              notes = section.strip() + "\n"
+          else:
+              notes = text
+          Path("dist/release-notes.md").write_text(notes, encoding="utf-8", newline="\n")
+          PY
       - name: Publish stable release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -55,4 +76,4 @@ jobs:
             "dist/CylinderResample_Maya2024_v${VERSION}.zip" \
             "dist/CylinderResample_Maya2024_v${VERSION}.zip.sha256" \
             dist/update-manifest.json \
-            --verify-tag --title "$RELEASE_TAG" --notes-file CHANGELOG.md
+            --verify-tag --title "$RELEASE_TAG" --notes-file dist/release-notes.md

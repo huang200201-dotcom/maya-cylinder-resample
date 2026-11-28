@@ -1,10 +1,10 @@
 # 使用说明
 
-适配目标：Windows / Maya 2022 至 2027，插件 0.5.0。仅支持 Python 3，最低 Python 3.7；六版 Maya 尚未逐版完成原生实机验收。
+适配目标：Windows / Maya 2022 至 2027，插件 0.5.1。仅支持 Python 3，最低 Python 3.7；六版 Maya 尚未逐版完成原生实机验收。
 
 ## 安装
 
-从仓库 [Releases](https://github.com/huang200201-dotcom/maya-cylinder-resample/releases/latest) 下载 `CylinderResample_Maya2022-2027_v0.5.0.zip`，完整解压后将 `install.py` 拖入 Maya 三维视图。文件会复制到当前 Maya 版本的用户脚本目录，工具会打开，并在 `CylinderTools` 工具架添加 `CR` 按钮。无需安装其他 Python 库。使用多个 Maya 版本时，需分别在各版本中安装一次。
+从仓库 [Releases](https://github.com/huang200201-dotcom/maya-cylinder-resample/releases/latest) 下载 `CylinderResample_Maya2022-2027_v0.5.1.zip`，完整解压后将 `install.py` 拖入 Maya 三维视图。文件会复制到当前 Maya 版本的用户脚本目录，工具会打开，并在 `CylinderTools` 工具架添加 `CR` 按钮。无需安装其他 Python 库。使用多个 Maya 版本时，需分别在各版本中安装一次。
 
 Maya 2022 默认使用 Python 3。若曾将启动参数设置为 `-pythonver 2`，或将 `MAYA_PYTHON_VERSION` 设置为 `2`，先恢复默认 Python 3 模式并重启 Maya，再安装插件。不支持 Python 2 模式，不能通过安装额外库绕过这一要求。参见 [Autodesk Python 模式说明](https://help.autodesk.com/cloudhelp/2022/ENU/Maya-Scripting/files/GUID-C0F27A50-3DD6-454C-A4D1-9E3C44B3C990.htm)。
 

@@ -2,7 +2,7 @@
 
 面向 Windows / Maya 2022 至 2027 的 Python 3 工具。对已删除创建历史、已经加工过的圆柱和管体重新设置圆周段数，并尽量保留 UV 布局、材质分区和边的软硬状态。
 
-当前版本：**0.5.0**。运行时不需要额外安装 Python 库。已适配 Python 3.7 至 3.13；Maya 2022 必须使用 Python 3 模式，不支持 Python 2。该版本仍为试用版，六个 Maya 版本的原生场景、界面、撤销和热更新尚未逐版完成实机验证。
+当前版本：**0.5.1**。运行时不需要额外安装 Python 库。已适配 Python 3.7 至 3.14；Maya 2022 必须使用 Python 3 模式，不支持 Python 2。该版本仍为试用版，六个 Maya 版本的原生场景、界面、撤销和热更新尚未逐版完成实机验证。
 
 ## 安装与使用
 
@@ -75,7 +75,7 @@ python tools/build_release.py --output-dir dist
 python tools/build_release.py --verify-only --output-dir dist
 ```
 
-测试覆盖纯几何计算、模拟界面会话与更新下载/校验/安装逻辑。GitHub Actions 在 Windows 2022 和 Ubuntu 22.04 的 Python 3.7、3.9、3.10、3.11、3.13 上运行真实解释器测试及发布包验证，但不包含 Maya 原生场景 API。Ubuntu 测试通过不表示插件已完成 Linux Maya 适配。
+测试覆盖纯几何计算、模拟界面会话与更新下载/校验/安装逻辑。GitHub Actions 在 Windows 2022 和 Ubuntu 22.04 的 Python 3.7、3.9、3.10、3.11、3.13、3.14 上运行真实解释器测试及发布包验证，但不包含 Maya 原生场景 API。Ubuntu 测试通过不表示插件已完成 Linux Maya 适配。
 
 本机 Maya 后台程序导入 Autodesk DLL 时出现 `WinError 1114` 初始化错误，因此实际 Maya 界面、撤销/重做及热更新的完整端到端验证尚未完成。发布包提供 `check_in_maya.py`，可拖入正常打开的 Maya 进行临时模型兼容自检；该自检不替代完整界面测试。
 

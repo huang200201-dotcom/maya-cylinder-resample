@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -25,12 +26,14 @@ ARCHIVE_LIMIT = 32 * 1024 * 1024
 UNPACKED_LIMIT = 64 * 1024 * 1024
 FILE_LIMIT = 256
 NETWORK_TIMEOUT = 30
+_RETRY_ATTEMPTS = 2
+_RETRY_DELAY = 0.5
+_MAX_BACKUPS = 3
 PACKAGE_PREFIX = "scripts/cylinder_resample/"
 ARCHIVE_PREFIX = "CylinderResample/"
 REQUIRED_FILES = {
     "__init__.py", "core.py", "adapter.py", "ui.py", "updater.py",
-    "config.json", "mesh_command.py", "update_ui.py", "compat.py", "spacing.py", "topology.py", "uv_transfer.py",
-    "material_uv_links.py",
+    "config.json", "mesh_command.py", "update_ui.py", "compat.py",
 }
 _VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
 _REPOSITORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}\Z")
@@ -121,42 +124,49 @@ def _request(url, limit, token=None, accept="application/vnd.github+json"):
     }
     if token and parsed.hostname == "api.github.com":
         headers["Authorization"] = "Bearer " + _token(token)
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        opener = urllib.request.build_opener(_SafeRedirect())
-        with opener.open(request, timeout=NETWORK_TIMEOUT) as response:
-            _validate_download_url(response.geturl())
-            length = response.headers.get("Content-Length")
-            if length is not None:
-                try:
-                    length = int(length)
-                except (ValueError, TypeError):
-                    raise UpdaterError("更新服务器返回了无效文件大小。") from None
-                if length < 0 or length > limit:
-                    raise UpdaterError("更新文件超过允许的大小。")
-            chunks = []
-            received = 0
-            while True:
-                chunk = response.read(min(65536, limit + 1 - received))
-                if not chunk:
-                    break
-                received += len(chunk)
-                if received > limit:
-                    raise UpdaterError("更新文件超过允许的大小。")
-                chunks.append(chunk)
-            if length is not None and received != length:
-                raise UpdaterError("更新下载不完整，请重试。")
-            return b"".join(chunks)
-    except urllib.error.HTTPError as error:
-        messages = {
-            401: "GitHub 访问令牌无效。",
-            403: "GitHub 暂时限制访问，或令牌没有读取仓库的权限。",
-            404: "未找到公开的正式 Release；私有仓库需要读取权限。",
-            429: "GitHub 请求过于频繁，请稍后重试。",
-        }
-        raise UpdaterError(messages.get(error.code, "GitHub 更新服务暂时不可用。")) from None
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-        raise UpdaterError("连接 GitHub 失败，请检查网络或代理后重试。") from None
+    for attempt in range(_RETRY_ATTEMPTS + 1):
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            opener = urllib.request.build_opener(_SafeRedirect())
+            with opener.open(request, timeout=NETWORK_TIMEOUT) as response:
+                _validate_download_url(response.geturl())
+                length = response.headers.get("Content-Length")
+                if length is not None:
+                    try:
+                        length = int(length)
+                    except (ValueError, TypeError):
+                        raise UpdaterError("更新服务器返回了无效文件大小。") from None
+                    if length < 0 or length > limit:
+                        raise UpdaterError("更新文件超过允许的大小。")
+                chunks = []
+                received = 0
+                while True:
+                    chunk = response.read(min(65536, limit + 1 - received))
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > limit:
+                        raise UpdaterError("更新文件超过允许的大小。")
+                    chunks.append(chunk)
+                if length is not None and received != length:
+                    raise UpdaterError("更新下载不完整，请重试。")
+                return b"".join(chunks)
+        except urllib.error.HTTPError as error:
+            messages = {
+                401: "GitHub 访问令牌无效。",
+                403: "GitHub 暂时限制访问，或令牌没有读取仓库的权限。",
+                404: "未找到公开的正式 Release；私有仓库需要读取权限。",
+                429: "GitHub 请求过于频繁，请稍后重试。",
+            }
+            raise UpdaterError(messages.get(error.code, "GitHub 更新服务暂时不可用（HTTP {}）。".format(error.code))) from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt < _RETRY_ATTEMPTS:
+                if _RETRY_DELAY > 0:
+                    time.sleep(_RETRY_DELAY * (attempt + 1))
+                continue
+            raise UpdaterError("连接 GitHub 失败，请检查网络或代理后重试。") from None
+        except ValueError:
+            raise UpdaterError("连接 GitHub 失败，请检查网络或代理后重试。") from None
 
 
 def _json(data, limit=JSON_LIMIT):
@@ -286,7 +296,10 @@ def _python_version(data):
     bindings = [node for node in ast.walk(tree)
                 if isinstance(node, ast.Name) and node.id == "__version__"
                 and isinstance(node.ctx, (ast.Store, ast.Del))]
-    literal_types = (ast.Str, getattr(ast, "Constant", ast.Str))
+    literal_types = tuple(
+        node_type for node_type in (getattr(ast, "Constant", None), getattr(ast, "Str", None))
+        if node_type is not None
+    )
     if len(values) != 1 or len(bindings) != 1 or not isinstance(values[0], literal_types):
         raise UpdaterError("插件包缺少明确的版本号。")
     try:
@@ -364,6 +377,13 @@ def _validated_package(archive_bytes, manifest):
     return contents
 
 
+def _archive_candidates(version):
+    return (
+        "CylinderResample_Maya2024_v{}.zip".format(version),
+        "CylinderResample_Maya2022-2027_v{}.zip".format(version),
+    )
+
+
 def check_for_update(current_version=None, repository=None, token=None, maya_version=None):
     year = _maya_version(maya_version)
     if current_version is None:
@@ -387,19 +407,31 @@ def check_for_update(current_version=None, repository=None, token=None, maya_ver
     assets = release.get("assets")
     if not isinstance(assets, list) or len(assets) > FILE_LIMIT:
         raise UpdaterError("Release 附件信息无效。")
-    archive_name = "CylinderResample_Maya2024_v{}.zip".format(version)
+    archive_names = _archive_candidates(version)
+    allowed_names = set(archive_names) | {"update-manifest.json"}
     selected = {}
     for asset in assets:
-        if isinstance(asset, dict) and asset.get("name") in (archive_name, "update-manifest.json"):
+        if isinstance(asset, dict) and asset.get("name") in allowed_names:
             if asset["name"] in selected:
                 raise UpdaterError("Release 包含重名更新附件。")
             selected[asset["name"]] = asset
-    archive_asset = _asset(selected.get(archive_name), repository, archive_name, ARCHIVE_LIMIT)
+    validated_archives = {}
+    for name in archive_names:
+        if name in selected:
+            validated_archives[name] = _asset(selected[name], repository, name, ARCHIVE_LIMIT)
+    if not validated_archives:
+        raise UpdaterError("Release 缺少所需更新附件。")
     manifest_asset = _asset(selected.get("update-manifest.json"), repository, "update-manifest.json", JSON_LIMIT)
     manifest_bytes = _request(manifest_asset["url"], JSON_LIMIT, token, "application/octet-stream")
     if len(manifest_bytes) != manifest_asset["size"]:
         raise UpdaterError("更新清单下载不完整。")
-    manifest = _validate_manifest(_json(manifest_bytes), version, archive_asset, maya_version=year)
+    manifest_data = _json(manifest_bytes)
+    declared_archive = manifest_data.get("archive")
+    declared_name = declared_archive.get("name") if isinstance(declared_archive, dict) else None
+    archive_asset = validated_archives.get(declared_name)
+    if archive_asset is None:
+        raise UpdaterError("更新包大小或 SHA-256 清单无效。")
+    manifest = _validate_manifest(manifest_data, version, archive_asset, maya_version=year)
     notes = release.get("body") or ""
     if not isinstance(notes, str):
         raise UpdaterError("Release 更新说明无效。")
@@ -456,7 +488,7 @@ def _update_lock(parent):
     try:
         descriptor = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
-        raise UpdaterError("另一次更新尚未结束。若上次 Maya 已退出，请确认后手动移除更新锁文件。") from None
+        raise UpdaterError("另一次更新尚未结束。若上次 Maya 已退出，请确认后手动移除更新锁文件：{}".format(path)) from None
     except OSError:
         raise UpdaterError("插件目录不可写，无法创建更新锁。") from None
     try:
@@ -474,6 +506,32 @@ def _update_lock(parent):
             pass
 
 
+def _prune_old_backups(parent, keep_path, max_keep=_MAX_BACKUPS):
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    candidates = []
+    try:
+        entries = list(parent.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry == keep_path or not entry.name.startswith("cylinder_resample.backup-"):
+            continue
+        try:
+            details = os.lstat(str(entry))
+        except OSError:
+            continue
+        attributes = getattr(details, "st_file_attributes", 0) or 0
+        if stat.S_ISLNK(details.st_mode) or attributes & reparse_flag or not stat.S_ISDIR(details.st_mode):
+            continue
+        candidates.append((details.st_mtime, entry))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    for _, stale in candidates[max(0, max_keep - 1):]:
+        try:
+            shutil.rmtree(str(stale))
+        except OSError:
+            pass
+
+
 def install_release(release, install_dir=None, token=None, maya_version=None):
     if not isinstance(release, dict):
         raise UpdaterError("请先检查更新，再安装正式 Release。")
@@ -484,8 +542,11 @@ def install_release(release, install_dir=None, token=None, maya_version=None):
     repository = _repository(release.get("repository"))
     version = release.get("version")
     _version(version)
-    archive_name = "CylinderResample_Maya2024_v{}.zip".format(version)
-    archive_asset = _asset(release.get("archive_asset"), repository, archive_name, ARCHIVE_LIMIT)
+    candidates = _archive_candidates(version)
+    raw_asset = release.get("archive_asset")
+    raw_name = raw_asset.get("name") if isinstance(raw_asset, dict) else None
+    archive_name = raw_name if raw_name in candidates else candidates[0]
+    archive_asset = _asset(raw_asset, repository, archive_name, ARCHIVE_LIMIT)
     manifest = _validate_manifest(release.get("manifest"), version, archive_asset, maya_version=year)
     target = _target(install_dir)
     previous_version = _installed_version(target)
@@ -534,6 +595,7 @@ def install_release(release, install_dir=None, token=None, maya_version=None):
                     shutil.rmtree(staging)
                 except OSError:
                     pass
+        _prune_old_backups(parent, backup)
     return {
         "version": version, "previous_version": previous_version,
         "backup_dir": str(backup), "install_dir": str(target), "repository": repository,

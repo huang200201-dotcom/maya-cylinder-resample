@@ -18,7 +18,7 @@ VERSION_PATTERN = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\Z"
 REQUIRED = {
     "__init__.py", "core.py", "adapter.py", "ui.py", "updater.py",
     "mesh_command.py", "update_ui.py", "compat.py", "config.json", "spacing.py", "topology.py", "uv_transfer.py",
-    "material_uv_links.py",
+    "material_uv_links.py", "self_test.py",
 }
 
 
