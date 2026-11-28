@@ -1,5 +1,11 @@
 # 更新记录
 
+## 0.5.2
+
+- 修复 0.5.1 在 Maya 中生成/更新预览时直接闪退的严重问题：命令语法长参数名 `-key` 长度不足 4 个字符，导致 Maya `MSyntax.addFlag` 失败并触发 C++ 崩溃；现已改为合法的 `-t / -token`。
+- 修正保留自定义旋转/缩放枢轴时 `setRotatePivot` / `setScalePivot` 的 `balance` 参数为 `True`（且仅在非零枢轴时写入），避免带旋转或缩放的模型位置偏移。
+- 单元测试中的 `FakeSyntax.addFlag` 增加 Maya 真实的短/长参数名长度校验规则，防止同类问题回归。
+
 ## 0.5.1
 
 - 修复 Python 3.14 中移除 `ast.Str` 导致的更新器版本解析报错，CI 测试矩阵扩展至 Python 3.7–3.14。

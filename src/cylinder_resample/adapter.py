@@ -547,7 +547,7 @@ def build_result(snapshot, target_count, shape_mode="contour", preserve_uvs=True
         cmds.undoInfo(openChunk=True, chunkName="CylinderResample")
     try:
         with _stage_mesh_payload(data) as token:
-            node = getattr(cmds, create_command)(key=token)
+            node = getattr(cmds, create_command)(token=token)
         output_shape = cmds.listRelatives(node, shapes=True, fullPath=True)[0]
         groups = _write_materials(node, output_shape, current, result["face_sources"])
         if len(result["uv_sets"]) > 1 and groups:

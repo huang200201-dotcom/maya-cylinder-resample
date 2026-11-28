@@ -13,10 +13,10 @@ def maya_useNewAPI():
 
 
 def _load_payload(database):
-    if database.isFlagSet("-key"):
-        key = database.flagArgumentString("-key", 0)
+    if database.isFlagSet("-token"):
+        token = database.flagArgumentString("-token", 0)
         adapter = sys.modules.get("cylinder_resample.adapter") or importlib.import_module("cylinder_resample.adapter")
-        return adapter._consume_mesh_payload(key)
+        return adapter._consume_mesh_payload(token)
     if database.isFlagSet("-data"):
         return json.loads(database.flagArgumentString("-data", 0))
     raise RuntimeError("创建网格命令缺少输入数据。")
@@ -54,7 +54,7 @@ class CreateMeshCommand(om.MPxCommand):
     def syntax_creator():
         syntax = om.MSyntax()
         syntax.addFlag("-d", "-data", om.MSyntax.kString)
-        syntax.addFlag("-k", "-key", om.MSyntax.kString)
+        syntax.addFlag("-t", "-token", om.MSyntax.kString)
         return syntax
 
     def isUndoable(self):
@@ -69,10 +69,12 @@ class CreateMeshCommand(om.MPxCommand):
             self._node = transform.create()
             transform.setName(data["name"])
             transform.setTransformation(om.MTransformationMatrix(om.MMatrix(data["matrix"])))
-            if data.get("rotate_pivot") is not None:
-                transform.setRotatePivot(om.MPoint(*data["rotate_pivot"]), om.MSpace.kTransform, False)
-            if data.get("scale_pivot") is not None:
-                transform.setScalePivot(om.MPoint(*data["scale_pivot"]), om.MSpace.kTransform, False)
+            rotate_pivot = data.get("rotate_pivot")
+            if rotate_pivot and any(abs(v) > 1.0e-12 for v in rotate_pivot):
+                transform.setRotatePivot(om.MPoint(*rotate_pivot), om.MSpace.kTransform, True)
+            scale_pivot = data.get("scale_pivot")
+            if scale_pivot and any(abs(v) > 1.0e-12 for v in scale_pivot):
+                transform.setScalePivot(om.MPoint(*scale_pivot), om.MSpace.kTransform, True)
             mesh = om.MFnMesh()
             mesh.create([om.MPoint(*point) for point in data["points"]],
                         [len(face) for face in data["faces"]],

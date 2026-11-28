@@ -52,6 +52,13 @@ class FakeSyntax:
         self.flags = []
 
     def addFlag(self, short_name, long_name, flag_type):
+        # Enforce Maya's real MSyntax rules: short 1..3 chars, long >= 4 chars (excluding '-').
+        if not short_name.startswith("-") or not 1 <= len(short_name[1:]) <= 3:
+            raise RuntimeError("Invalid short flag: " + short_name)
+        if not long_name.startswith("-") or len(long_name[1:]) < 4:
+            raise RuntimeError("Invalid long flag (Maya requires >= 4 chars): " + long_name)
+        if any(s == short_name or l == long_name for s, l, _ in self.flags):
+            raise RuntimeError("Duplicate flag: " + short_name + " / " + long_name)
         self.flags.append((short_name, long_name, flag_type))
 
 
@@ -139,22 +146,22 @@ class MeshPluginLoaderTests(unittest.TestCase):
         self.assertIsInstance(command, command_type)
         self.assertTrue(command.isUndoable())
 
-    def test_command_syntax_accepts_the_json_data_string_and_handoff_key(self):
+    def test_command_syntax_accepts_the_json_data_string_and_handoff_token(self):
         namespace = load_plugin()
         syntax = namespace["CreateMeshCommand"].syntax_creator()
         self.assertEqual(syntax.flags, [
             ("-d", "-data", FakeSyntax.kString),
-            ("-k", "-key", FakeSyntax.kString),
+            ("-t", "-token", FakeSyntax.kString),
         ])
 
-    def test_load_payload_supports_in_process_key_handoff_and_legacy_json(self):
+    def test_load_payload_supports_in_process_token_handoff_and_legacy_json(self):
         namespace = load_plugin()
         staged = {}
 
-        def consume(key):
-            if key not in staged:
+        def consume(token):
+            if token not in staged:
                 raise RuntimeError("expired")
-            return staged.pop(key)
+            return staged.pop(token)
 
         fake_adapter = types.SimpleNamespace(_consume_mesh_payload=consume)
 
@@ -168,11 +175,11 @@ class MeshPluginLoaderTests(unittest.TestCase):
             def flagArgumentString(self, flag, index):
                 return self.flags[flag]
 
-        staged["tok1"] = {"name": "from_key"}
+        staged["tok1"] = {"name": "from_token"}
         with patch.dict(sys.modules, {"cylinder_resample.adapter": fake_adapter}):
-            self.assertEqual(namespace["_load_payload"](FakeDB({"-key": "tok1"})), {"name": "from_key"})
+            self.assertEqual(namespace["_load_payload"](FakeDB({"-token": "tok1"})), {"name": "from_token"})
             with self.assertRaises(RuntimeError):
-                namespace["_load_payload"](FakeDB({"-key": "tok1"}))
+                namespace["_load_payload"](FakeDB({"-token": "tok1"}))
         self.assertEqual(namespace["_load_payload"](FakeDB({"-data": '{"name":"from_json"}'})),
                          {"name": "from_json"})
         with self.assertRaises(RuntimeError):

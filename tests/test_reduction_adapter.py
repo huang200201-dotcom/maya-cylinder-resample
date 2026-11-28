@@ -59,8 +59,8 @@ class ReductionAdapterTests(unittest.TestCase):
         payloads = []
 
         def create(**kwargs):
-            if "key" in kwargs:
-                payloads.append(self.adapter._consume_mesh_payload(kwargs["key"]))
+            if "token" in kwargs:
+                payloads.append(self.adapter._consume_mesh_payload(kwargs["token"]))
             else:
                 payloads.append(json.loads(kwargs["data"]))
             return "|Result"
@@ -433,7 +433,7 @@ class ReductionAdapterTests(unittest.TestCase):
             payloads = []
 
             def create(**kwargs):
-                payloads.append(self.adapter._consume_mesh_payload(kwargs["key"]))
+                payloads.append(self.adapter._consume_mesh_payload(kwargs["token"]))
                 return "|Result"
 
             with ExitStack() as stack:
@@ -478,7 +478,7 @@ class ReductionAdapterTests(unittest.TestCase):
         created = []
 
         def create(**kwargs):
-            self.adapter._consume_mesh_payload(kwargs["key"])
+            self.adapter._consume_mesh_payload(kwargs["token"])
             created.append("|Orphan")
             return "|Orphan"
 
